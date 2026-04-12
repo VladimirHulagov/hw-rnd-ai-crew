@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Type
 
 from .base import ParserBase
+from .pdf import PdfParser
 from .plaintext import PlaintextParser
 
 _PARSERS: Dict[str, Type[ParserBase]] = {}
@@ -13,6 +14,7 @@ def _register(parser_cls: Type[ParserBase]) -> None:
 
 
 _register(PlaintextParser)
+_register(PdfParser)
 
 
 def get_parser(ext: str) -> Optional[ParserBase]:

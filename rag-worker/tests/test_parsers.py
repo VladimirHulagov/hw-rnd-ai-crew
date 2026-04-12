@@ -43,3 +43,44 @@ class TestPlaintextParser:
         assert ".txt" in exts
         assert ".md" in exts
         assert ".csv" in exts
+
+
+from unittest.mock import patch, MagicMock
+from rag.parsers.pdf import PdfParser
+
+
+class TestPdfParser:
+    def test_pdf_registered(self):
+        parser = get_parser(".pdf")
+        assert parser is not None
+        assert isinstance(parser, PdfParser)
+
+    @patch("rag.parsers.pdf.subprocess.run")
+    def test_parse_pdf_success(self, mock_run, tmp_path):
+        pdf_file = tmp_path / "test.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4 fake")
+
+        def side_effect(cmd, **kwargs):
+            out_dir = Path(cmd[cmd.index("--output-dir") + 1])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "test.md").write_text("Page 1 content")
+            return MagicMock(returncode=0, stderr="")
+
+        mock_run.side_effect = side_effect
+
+        parser = PdfParser()
+        doc = parser.parse(pdf_file)
+        assert len(doc.pages) == 1
+        assert doc.pages[0] == "Page 1 content"
+        assert doc.metadata["file_type"] == "pdf"
+
+    @patch("rag.parsers.pdf.subprocess.run")
+    def test_parse_pdf_failure_raises(self, mock_run, tmp_path):
+        pdf_file = tmp_path / "bad.pdf"
+        pdf_file.write_bytes(b"not a pdf")
+
+        mock_run.return_value = MagicMock(returncode=1, stderr="error details")
+
+        parser = PdfParser()
+        with pytest.raises(RuntimeError, match="PDF parsing failed"):
+            parser.parse(pdf_file)
