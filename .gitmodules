@@ -10,3 +10,6 @@
 [submodule "superpowers"]
 	path = superpowers
 	url = https://github.com/VladimirHulagov/superpowers.git
+[submodule "rag-mcp"]
+	path = rag-mcp
+	url = https://github.com/VladimirHulagov/rag-mcp.git

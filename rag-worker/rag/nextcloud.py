@@ -80,7 +80,12 @@ def _parse_propfind(xml_text: str) -> List[NextcloudFile]:
         filename = href_text.rstrip("/").split("/")[-1]
 
         path_parts = href_text.split("/files/")
-        relative_path = "/" + path_parts[-1] if len(path_parts) > 1 else href_text
+        if len(path_parts) > 1:
+            sub = path_parts[-1]
+            first_slash = sub.find("/")
+            relative_path = sub[first_slash:] if first_slash >= 0 else "/" + sub
+        else:
+            relative_path = href_text
 
         if not mimetype and not href_text.endswith("/"):
             continue
