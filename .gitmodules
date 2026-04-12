@@ -13,3 +13,6 @@
 [submodule "rag-mcp"]
 	path = rag-mcp
 	url = https://github.com/VladimirHulagov/rag-mcp.git
+[submodule "rag-worker"]
+	path = rag-worker
+	url = https://github.com/VladimirHulagov/rag-worker.git
