@@ -1,0 +1,76 @@
+services:
+  qdrant:
+    image: qdrant/qdrant
+    container_name: qdrant
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      local-ai-internal:
+        aliases:
+          - qdrant
+    expose:
+      - "6333"
+      - "6334"
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      local-ai-internal:
+        aliases:
+          - ollama
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  rag-worker:
+    build: ./rag-worker
+    container_name: rag-worker
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - local-ai-internal
+      - nextcloud-rag
+      - traefik
+
+  rag-mcp:
+    build: ./rag-mcp
+    container_name: rag-mcp
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - local-ai-internal
+      - traefik
+    labels:
+      traefik.enable: true
+      traefik.http.routers.rag-mcp.rule: Host(`${SUB_DOMAIN}.${SERVER_DOMAIN}`)
+      traefik.http.routers.rag-mcp.entrypoints: websecure
+      traefik.http.routers.rag-mcp.tls: true
+      traefik.http.services.rag-mcp.loadbalancer.server.port: 8081
+
+volumes:
+  qdrant_data:
+    external: true
+    name: n8n_qdrant_data
+  ollama_data:
+    external: true
+    name: n8n_ollama_data
+
+networks:
+  local-ai-internal:
+    name: local-ai-internal
+    external: true
+  nextcloud-rag:
+    name: nextcloud-rag
+    external: true
+  traefik:
+    name: traefik-public
+    external: true
