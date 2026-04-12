@@ -56,6 +56,52 @@ services:
       traefik.http.routers.rag-mcp.tls: true
       traefik.http.services.rag-mcp.loadbalancer.server.port: 8081
 
+  paperclip-db:
+    image: postgres:17-alpine
+    container_name: paperclip-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: paperclip
+      POSTGRES_DB: paperclip
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - paperclip_pgdata:/var/lib/postgresql/data
+    networks:
+      - local-ai-internal
+
+  paperclip-server:
+    image: paperclip-server:latest
+    container_name: paperclip-server
+    restart: unless-stopped
+    depends_on:
+      paperclip-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://paperclip:paperclip@paperclip-db:5432/paperclip
+      PORT: "3100"
+      SERVE_UI: "true"
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      PAPERCLIP_PUBLIC_URL: "https://${PAPERCLIP_SUB_DOMAIN:-paperclip}.${SERVER_DOMAIN}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET}"
+    volumes:
+      - paperclip_data:/paperclip
+      - /mnt/services/gladiator/agents:/mnt/services/gladiator/agents
+    networks:
+      - local-ai-internal
+      - traefik
+    labels:
+      traefik.enable: true
+      traefik.http.routers.paperclip.rule: Host(`${PAPERCLIP_SUB_DOMAIN:-paperclip}.${SERVER_DOMAIN}`)
+      traefik.http.routers.paperclip.entrypoints: websecure
+      traefik.http.routers.paperclip.tls: true
+      traefik.http.services.paperclip.loadbalancer.server.port: 3100
+
 volumes:
   qdrant_data:
     external: true
@@ -63,6 +109,12 @@ volumes:
   ollama_data:
     external: true
     name: n8n_ollama_data
+  paperclip_pgdata:
+    external: true
+    name: paperclip_pgdata
+  paperclip_data:
+    external: true
+    name: paperclip_paperclip-data
 
 networks:
   local-ai-internal:
