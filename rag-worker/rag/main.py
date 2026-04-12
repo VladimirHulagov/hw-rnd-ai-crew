@@ -87,17 +87,30 @@ def index_file(file_path: str, file_content: bytes, modified_time: int = 0) -> i
     return len(points)
 
 
+def _parse_webhook_path(body: dict) -> Optional[str]:
+    event = body.get("event", {})
+    node = event.get("node", {})
+    internal_path = node.get("path", "")
+    if not internal_path:
+        return None
+    user = os.environ.get("NEXTCLOUD_USER", "")
+    prefix = f"/{user}/files/"
+    if internal_path.startswith(prefix):
+        return "/" + internal_path[len(prefix):]
+    return internal_path
+
+
+def _is_delete_event(body: dict) -> bool:
+    event_class = body.get("event", {}).get("class", "")
+    return "Deleted" in event_class
+
+
 @app.post("/webhook/nextcloud")
 async def webhook_nextcloud(request: Request):
     body = await request.json()
     log.info("Webhook received: %s", body)
 
-    obj = body.get("object", {})
-    file_name = obj.get("name", "")
-    file_path = obj.get("path", "")
-    signal = body.get("signal", "")
-    mimetype = obj.get("mimetype", "")
-
+    file_path = _parse_webhook_path(body)
     if not file_path:
         return JSONResponse({"status": "ignored", "reason": "no path"})
 
@@ -105,7 +118,7 @@ async def webhook_nextcloud(request: Request):
     if ext not in supported_extensions():
         return JSONResponse({"status": "skipped", "reason": f"unsupported type: {ext}"})
 
-    if signal in ("FileDeleted", "file_deleted"):
+    if _is_delete_event(body):
         delete_by_path(file_path)
         return JSONResponse({"status": "deleted", "path": file_path})
 
@@ -116,8 +129,7 @@ async def webhook_nextcloud(request: Request):
         log.error("Failed to download %s: %s", file_path, e)
         return JSONResponse({"status": "error", "reason": str(e)}, status_code=500)
 
-    size = obj.get("size", 0)
-    count = index_file(file_path, content, modified_time=size)
+    count = index_file(file_path, content)
     return JSONResponse({"status": "indexed", "path": file_path, "chunks": count})
 
 

@@ -6,7 +6,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct,
     Filter, FieldCondition, MatchValue,
-    PointsList,
+    FilterSelector,
 )
 
 log = logging.getLogger(__name__)
@@ -57,13 +57,14 @@ def delete_by_path(file_path: str) -> int:
     name = _collection_name()
     client.delete(
         collection_name=name,
-        points_filter=Filter(
-            must=[FieldCondition(key="path", match=MatchValue(value=file_path))]
+        points_selector=FilterSelector(
+            filter=Filter(
+                must=[FieldCondition(key="path", match=MatchValue(value=file_path))]
+            )
         ),
     )
-    count_before = _count_by_path(client, name, file_path)
     log.info("Deleted points for path=%s", file_path)
-    return count_before
+    return 0
 
 
 def _count_by_path(client: QdrantClient, collection: str, file_path: str) -> int:
