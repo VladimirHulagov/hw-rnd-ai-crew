@@ -81,6 +81,8 @@ services:
     depends_on:
       paperclip-db:
         condition: service_healthy
+    entrypoint: ["/opt/paperclip-entrypoint.sh"]
+    command: ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
     environment:
       DATABASE_URL: postgres://paperclip:paperclip@paperclip-db:5432/paperclip
       PORT: "3100"
@@ -89,9 +91,27 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "https://${PAPERCLIP_SUB_DOMAIN:-paperclip}.${SERVER_DOMAIN}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET}"
+      PAPERCLIP_AGENT_JWT_SECRET: "${BETTER_AUTH_SECRET}"
+      GLM_API_KEY: "${GLM_API_KEY:-}"
+      GLM_BASE_URL: "${GLM_BASE_URL:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      FAL_KEY: "${FAL_KEY:-}"
+      TAVILY_API_KEY: "${TAVILY_API_KEY:-}"
+      PARALLEL_API_KEY: "${PARALLEL_API_KEY:-}"
+      MCP_RAG_API_KEY: "${MCP_RAG_API_KEY:-}"
     volumes:
       - paperclip_data:/paperclip
       - /mnt/services/gladiator/agents:/mnt/services/gladiator/agents
+      - ./hermes-agent:/opt/hermes-agent:ro
+      - ./hermes-shared-config:/opt/hermes-shared-config:ro
+      - hermes_src:/opt/hermes-agent-build
+      - ./paperclip-entrypoint.sh:/opt/paperclip-entrypoint.sh:ro
+      - hermes_venv:/opt/hermes-venv
+      - hermes_instances:/paperclip/hermes-instances
+      - ./hermes-paperclip-adapter/dist/shared/constants.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/shared/constants.js:ro
+      - ./hermes-paperclip-adapter/dist/server/index.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/index.js:ro
+      - ./hermes-paperclip-adapter/dist/server/test.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/test.js:ro
+      - ./hermes-paperclip-adapter/dist/server/execute.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/execute.js:ro
     networks:
       - local-ai-internal
       - traefik
@@ -115,6 +135,12 @@ volumes:
   paperclip_data:
     external: true
     name: paperclip_paperclip-data
+  hermes_venv:
+    name: hermes_venv
+  hermes_instances:
+    name: hermes_instances
+  hermes_src:
+    name: hermes_src
 
 networks:
   local-ai-internal:

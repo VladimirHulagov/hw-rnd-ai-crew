@@ -1,0 +1,51 @@
+model:
+  default: glm-5.1
+  provider: zai
+terminal:
+  backend: local
+  cwd: .
+  timeout: 180
+  persistent_shell: true
+compression:
+  enabled: true
+  threshold: 0.6
+  target_ratio: 0.2
+  protect_last_n: 20
+  summary_model: glm-5
+  summary_provider: auto
+auxiliary:
+  vision:
+    provider: zai
+    model: glm-4.6v
+  web_extract:
+    provider: auto
+    timeout: 360
+  session_search:
+    provider: auto
+    timeout: 30
+display:
+  compact: true
+  personality: kawaii
+  streaming: false
+  tool_progress: result
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+approvals:
+  mode: off
+  timeout: 60
+web:
+  backend: tavily
+mcp_servers:
+  rag:
+    url: https://rag.collaborationism.tech/mcp
+    headers:
+      Authorization: Bearer ${MCP_RAG_API_KEY}
+    enabled: true
+    timeout: 120
+    connect_timeout: 60
+_config_version: 6
+security:
+  redact_secrets: true
+  tirith_enabled: false
+  tirith_fail_open: true
