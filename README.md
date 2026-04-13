@@ -14,8 +14,8 @@ Infrastructure for the AI crew: RAG pipeline over Nextcloud files, Paperclip ser
               ┌────────────────┼────────────────┐
               │                │                │
      ┌────────┴────────┐  ┌───┴───┐  ┌─────────┴─────────┐
-     │   rag.collab... │  │ paper │  │ nextcloud.collab..│
-     │   rag-mcp:8081  │  │ clip  │  │   (nginx+fpm)     │
+      │  rag.example.com│  │ paper│  │nextcloud.example. │
+      │   rag-mcp:8081  │  │ clip │  │   (nginx+fpm)     │
      └────────┬────────┘  └───┬───┘  └─────────┬─────────┘
               │                │                │
      ┌────────┴────────┐  ┌───┴────┐           │ webhooks
