@@ -23,13 +23,6 @@ services:
       local-ai-internal:
         aliases:
           - ollama
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
 
   rag-worker:
     build: ./rag-worker
@@ -55,6 +48,15 @@ services:
       traefik.http.routers.rag-mcp.entrypoints: websecure
       traefik.http.routers.rag-mcp.tls: true
       traefik.http.services.rag-mcp.loadbalancer.server.port: 8081
+
+  paperclip-mcp:
+    build: ./paperclip-mcp
+    container_name: paperclip-mcp
+    restart: unless-stopped
+    environment:
+      PAPERCLIP_API_URL: "http://paperclip-server:3100/api"
+    networks:
+      - local-ai-internal
 
   paperclip-db:
     image: postgres:17-alpine

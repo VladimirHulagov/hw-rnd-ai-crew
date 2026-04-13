@@ -44,6 +44,15 @@ mcp_servers:
     enabled: true
     timeout: 120
     connect_timeout: 60
+  paperclip:
+    url: http://paperclip-mcp:8082/mcp
+    headers:
+      X-Paperclip-Api-Key: ${PAPERCLIP_API_KEY}
+      X-Paperclip-Company-Id: ${PAPERCLIP_COMPANY_ID}
+      X-Paperclip-Agent-Id: ${PAPERCLIP_AGENT_ID}
+    enabled: true
+    timeout: 60
+    connect_timeout: 30
 _config_version: 6
 security:
   redact_secrets: true
