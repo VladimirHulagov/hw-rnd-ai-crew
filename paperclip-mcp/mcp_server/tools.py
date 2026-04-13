@@ -170,3 +170,110 @@ async def list_goals() -> Any:
 
 async def get_goal(goalId: str) -> Any:
     return await _request("GET", f"/goals/{goalId}")
+
+
+async def create_agent_hire(
+    name: str,
+    adapterType: str,
+    role: Optional[str] = None,
+    title: Optional[str] = None,
+    icon: Optional[str] = None,
+    reportsTo: Optional[str] = None,
+    capabilities: Optional[str] = None,
+    adapterConfig: Optional[Dict[str, Any]] = None,
+    runtimeConfig: Optional[Dict[str, Any]] = None,
+    budgetMonthlyCents: Optional[int] = None,
+    permissions: Optional[Dict[str, Any]] = None,
+    desiredSkills: Optional[List[str]] = None,
+    sourceIssueIds: Optional[List[str]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Any:
+    body: Dict[str, Any] = {"name": name, "adapterType": adapterType}
+    if role is not None:
+        body["role"] = role
+    if title is not None:
+        body["title"] = title
+    if icon is not None:
+        body["icon"] = icon
+    if reportsTo is not None:
+        body["reportsTo"] = reportsTo
+    if capabilities is not None:
+        body["capabilities"] = capabilities
+    if adapterConfig is not None:
+        body["adapterConfig"] = adapterConfig
+    if runtimeConfig is not None:
+        body["runtimeConfig"] = runtimeConfig
+    if budgetMonthlyCents is not None:
+        body["budgetMonthlyCents"] = budgetMonthlyCents
+    if permissions is not None:
+        body["permissions"] = permissions
+    if desiredSkills is not None:
+        body["desiredSkills"] = desiredSkills
+    if sourceIssueIds is not None:
+        body["sourceIssueIds"] = sourceIssueIds
+    if metadata is not None:
+        body["metadata"] = metadata
+    return await _request("POST", f"/companies/{_current_company_id}/agent-hires", json_body=body)
+
+
+async def create_agent(
+    name: str,
+    adapterType: str,
+    role: Optional[str] = None,
+    title: Optional[str] = None,
+    icon: Optional[str] = None,
+    reportsTo: Optional[str] = None,
+    capabilities: Optional[str] = None,
+    adapterConfig: Optional[Dict[str, Any]] = None,
+    runtimeConfig: Optional[Dict[str, Any]] = None,
+    budgetMonthlyCents: Optional[int] = None,
+    permissions: Optional[Dict[str, Any]] = None,
+    desiredSkills: Optional[List[str]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Any:
+    body: Dict[str, Any] = {"name": name, "adapterType": adapterType}
+    if role is not None:
+        body["role"] = role
+    if title is not None:
+        body["title"] = title
+    if icon is not None:
+        body["icon"] = icon
+    if reportsTo is not None:
+        body["reportsTo"] = reportsTo
+    if capabilities is not None:
+        body["capabilities"] = capabilities
+    if adapterConfig is not None:
+        body["adapterConfig"] = adapterConfig
+    if runtimeConfig is not None:
+        body["runtimeConfig"] = runtimeConfig
+    if budgetMonthlyCents is not None:
+        body["budgetMonthlyCents"] = budgetMonthlyCents
+    if permissions is not None:
+        body["permissions"] = permissions
+    if desiredSkills is not None:
+        body["desiredSkills"] = desiredSkills
+    if metadata is not None:
+        body["metadata"] = metadata
+    return await _request("POST", f"/companies/{_current_company_id}/agents", json_body=body)
+
+
+async def list_approvals(status: Optional[str] = None) -> Any:
+    params = {}
+    if status:
+        params["status"] = status
+    return await _request("GET", f"/companies/{_current_company_id}/approvals", params=params)
+
+
+async def get_approval(approvalId: str) -> Any:
+    return await _request("GET", f"/approvals/{approvalId}")
+
+
+async def approve_approval(approvalId: str) -> Any:
+    return await _request("POST", f"/approvals/{approvalId}/approve", json_body={})
+
+
+async def reject_approval(approvalId: str, reason: Optional[str] = None) -> Any:
+    body: Dict[str, Any] = {}
+    if reason is not None:
+        body["reason"] = reason
+    return await _request("POST", f"/approvals/{approvalId}/reject", json_body=body)

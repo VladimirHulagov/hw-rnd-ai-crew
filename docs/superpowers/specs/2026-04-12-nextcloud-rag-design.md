@@ -27,7 +27,7 @@ Build a RAG pipeline that indexes documents from a Nextcloud instance into a vec
 │     │                                                          │
 │     ▼                                                          │
 │  Traefik (TLS)                                                 │
-│  rag.collaborationism.tech                                     │
+│  rag.example.com                                     │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
         ▲
@@ -39,7 +39,7 @@ Build a RAG pipeline that indexes documents from a Nextcloud instance into a vec
 **Networks:**
 - `local-ai-internal` — rag-worker, rag-mcp, qdrant, ollama (internal communication)
 - `nextcloud-rag` — shared external network between Nextcloud and rag-worker for webhook delivery
-- `traefik` (traefik-public) — rag-mcp (public MCP access via TLS) + rag-worker (WebDAV downloads from Nextcloud via `https://nextcloud.collaborationism.tech`)
+- `traefik` (traefik-public) — rag-mcp (public MCP access via TLS) + rag-worker (WebDAV downloads from Nextcloud via `https://nextcloud.example.com`)
 
 ---
 
@@ -55,7 +55,7 @@ Build a RAG pipeline that indexes documents from a Nextcloud instance into a vec
 
 **Environment**:
 ```
-NEXTCLOUD_URL=https://nextcloud.collaborationism.tech
+NEXTCLOUD_URL=https://nextcloud.example.com
 NEXTCLOUD_USER=<username>
 NEXTCLOUD_APP_PASSWORD=<app_password>
 QDRANT_URL=http://qdrant:6333

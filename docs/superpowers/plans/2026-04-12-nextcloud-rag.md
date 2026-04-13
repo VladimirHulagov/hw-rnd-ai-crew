@@ -727,7 +727,7 @@ class NextcloudFile:
 
 
 def _base_url() -> str:
-    return os.environ.get("NEXTCLOUD_URL", "https://nextcloud.collaborationism.tech")
+    return os.environ.get("NEXTCLOUD_URL", "https://nextcloud.example.com")
 
 
 def _auth() -> tuple:
@@ -1535,7 +1535,7 @@ git commit -m "feat(rag-mcp): add MCP server with search_library, list, and stat
 Check if `/mnt/services/hw-rnd-ai-crew/.env` exists. Create/append:
 ```bash
 # Nextcloud
-NEXTCLOUD_URL=https://nextcloud.collaborationism.tech
+NEXTCLOUD_URL=https://nextcloud.example.com
 NEXTCLOUD_USER=admin
 NEXTCLOUD_APP_PASSWORD=TODO_GENERATE
 
@@ -1553,7 +1553,7 @@ MCP_BEARER_TOKEN=TODO_GENERATE
 
 # Traefik
 SUB_DOMAIN=rag
-SERVER_DOMAIN=collaborationism.tech
+SERVER_DOMAIN=example.com
 ```
 
 - [ ] **Step 2: Update docker-compose.yml**
@@ -1697,7 +1697,7 @@ Expected: `{"files":0,"chunks":0,"collection_exists":false}` or similar.
 
 Run:
 ```bash
-curl -s https://rag.collaborationism.tech/sse -H "Authorization: Bearer $MCP_BEARER_TOKEN" --max-time 5
+curl -s https://rag.example.com/sse -H "Authorization: Bearer $MCP_BEARER_TOKEN" --max-time 5
 ```
 Expected: SSE connection attempt (may time out, but should not 404/401).
 
@@ -1769,9 +1769,9 @@ Expected: `files` and `chunks` counts reflecting the indexed library.
 
 - [ ] **Step 3: Test search via MCP**
 
-Use `curl` or MCP client to call `search_library` through `https://rag.collaborationism.tech`:
+Use `curl` or MCP client to call `search_library` through `https://rag.example.com`:
 ```bash
-curl -X POST https://rag.collaborationism.tech/messages/ \
+curl -X POST https://rag.example.com/messages/ \
   -H "Authorization: Bearer $MCP_BEARER_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"search_library","arguments":{"query":"test query","top_k":3}},"id":1}'

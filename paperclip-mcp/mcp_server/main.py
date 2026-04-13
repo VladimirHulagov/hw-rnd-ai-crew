@@ -20,6 +20,12 @@ from .tools import (
     list_agents,
     get_agent,
     get_current_agent,
+    create_agent_hire,
+    create_agent,
+    list_approvals,
+    get_approval,
+    approve_approval,
+    reject_approval,
     list_projects,
     get_company,
     list_goals,
@@ -242,6 +248,95 @@ async def list_tools():
                 "required": ["goalId"],
             },
         ),
+        types.Tool(
+            name="paperclip_create_agent_hire",
+            description="Request to hire (create) a new agent. If company requires board approval, the agent will be created with 'pending_approval' status and an approval request will be generated. Otherwise the agent is created immediately. Requires canCreateAgents permission.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Agent display name"},
+                    "adapterType": {"type": "string", "description": "Adapter type (e.g. hermes_local, claude_local)"},
+                    "role": {"type": "string", "description": "Role: ceo, cto, cmo, cfo, engineer, designer, pm, qa, devops, researcher, general (default: general)"},
+                    "title": {"type": "string", "description": "Job title (e.g. 'Research Engineer')"},
+                    "icon": {"type": "string", "description": "Icon name (e.g. brain, code, terminal, rocket)"},
+                    "reportsTo": {"type": "string", "description": "UUID of manager agent"},
+                    "capabilities": {"type": "string", "description": "Description of agent capabilities"},
+                    "adapterConfig": {"type": "object", "description": "Adapter-specific configuration (e.g. model, provider, mcpServers)"},
+                    "runtimeConfig": {"type": "object", "description": "Runtime configuration (secrets, env vars)"},
+                    "permissions": {"type": "object", "description": "Permissions like {canCreateAgents: true, canAssignTasks: true}"},
+                    "desiredSkills": {"type": "array", "items": {"type": "string"}, "description": "List of desired skills"},
+                    "sourceIssueIds": {"type": "array", "items": {"type": "string"}, "description": "Issue UUIDs to link to this hire request"},
+                    "metadata": {"type": "object", "description": "Additional metadata"},
+                },
+                "required": ["name", "adapterType"],
+            },
+        ),
+        types.Tool(
+            name="paperclip_create_agent",
+            description="Directly create a new agent (board-only, no approval flow). The agent is created immediately with 'idle' status.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Agent display name"},
+                    "adapterType": {"type": "string", "description": "Adapter type (e.g. hermes_local, claude_local)"},
+                    "role": {"type": "string", "description": "Role: ceo, cto, cmo, cfo, engineer, designer, pm, qa, devops, researcher, general"},
+                    "title": {"type": "string", "description": "Job title"},
+                    "icon": {"type": "string", "description": "Icon name"},
+                    "reportsTo": {"type": "string", "description": "UUID of manager agent"},
+                    "capabilities": {"type": "string", "description": "Capabilities description"},
+                    "adapterConfig": {"type": "object", "description": "Adapter configuration"},
+                    "runtimeConfig": {"type": "object", "description": "Runtime configuration"},
+                    "permissions": {"type": "object", "description": "Permissions"},
+                    "desiredSkills": {"type": "array", "items": {"type": "string"}, "description": "Desired skills"},
+                    "metadata": {"type": "object", "description": "Additional metadata"},
+                },
+                "required": ["name", "adapterType"],
+            },
+        ),
+        types.Tool(
+            name="paperclip_list_approvals",
+            description="List approval requests in the company. Filter by status: pending, approved, rejected.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "description": "Filter by status: pending, approved, rejected"},
+                },
+            },
+        ),
+        types.Tool(
+            name="paperclip_get_approval",
+            description="Get details of a specific approval request.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "approvalId": {"type": "string", "description": "Approval UUID"},
+                },
+                "required": ["approvalId"],
+            },
+        ),
+        types.Tool(
+            name="paperclip_approve_approval",
+            description="Approve a pending approval request (e.g. agent hire). Board-only action.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "approvalId": {"type": "string", "description": "Approval UUID"},
+                },
+                "required": ["approvalId"],
+            },
+        ),
+        types.Tool(
+            name="paperclip_reject_approval",
+            description="Reject a pending approval request. Board-only action.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "approvalId": {"type": "string", "description": "Approval UUID"},
+                    "reason": {"type": "string", "description": "Reason for rejection"},
+                },
+                "required": ["approvalId"],
+            },
+        ),
     ]
 
 
@@ -311,6 +406,47 @@ async def _dispatch(name: str, args: dict):
         return await list_goals()
     elif name == "paperclip_get_goal":
         return await get_goal(args["goalId"])
+    elif name == "paperclip_create_agent_hire":
+        return await create_agent_hire(
+            name=args["name"],
+            adapterType=args["adapterType"],
+            role=args.get("role"),
+            title=args.get("title"),
+            icon=args.get("icon"),
+            reportsTo=args.get("reportsTo"),
+            capabilities=args.get("capabilities"),
+            adapterConfig=args.get("adapterConfig"),
+            runtimeConfig=args.get("runtimeConfig"),
+            budgetMonthlyCents=args.get("budgetMonthlyCents"),
+            permissions=args.get("permissions"),
+            desiredSkills=args.get("desiredSkills"),
+            sourceIssueIds=args.get("sourceIssueIds"),
+            metadata=args.get("metadata"),
+        )
+    elif name == "paperclip_create_agent":
+        return await create_agent(
+            name=args["name"],
+            adapterType=args["adapterType"],
+            role=args.get("role"),
+            title=args.get("title"),
+            icon=args.get("icon"),
+            reportsTo=args.get("reportsTo"),
+            capabilities=args.get("capabilities"),
+            adapterConfig=args.get("adapterConfig"),
+            runtimeConfig=args.get("runtimeConfig"),
+            budgetMonthlyCents=args.get("budgetMonthlyCents"),
+            permissions=args.get("permissions"),
+            desiredSkills=args.get("desiredSkills"),
+            metadata=args.get("metadata"),
+        )
+    elif name == "paperclip_list_approvals":
+        return await list_approvals(status=args.get("status"))
+    elif name == "paperclip_get_approval":
+        return await get_approval(args["approvalId"])
+    elif name == "paperclip_approve_approval":
+        return await approve_approval(args["approvalId"])
+    elif name == "paperclip_reject_approval":
+        return await reject_approval(args["approvalId"], reason=args.get("reason"))
     else:
         return {"error": f"Unknown tool: {name}"}
 
