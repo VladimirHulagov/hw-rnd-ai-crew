@@ -24,6 +24,11 @@ if ! command -v hermes &>/dev/null; then
     fi
 fi
 
+if ! python3 -c "import mcp" 2>/dev/null; then
+    echo "[entrypoint] Installing mcp package for MCP tool support..."
+    python3 -m pip install --break-system-packages mcp httpx 2>&1
+fi
+
 # Ensure all existing agent instances have the shared config
 if [ -d "$HERMES_SHARED_CONFIG" ]; then
     for instance_dir in "$HERMES_INSTANCES"/*/; do
