@@ -17,4 +17,4 @@ RUN mkdir -p /paperclip/hermes-instances /run/gateway-ports /var/log/supervisor 
 
 EXPOSE 8642-8673
 
-ENTRYPOINT ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
+ENTRYPOINT ["/usr/local/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
