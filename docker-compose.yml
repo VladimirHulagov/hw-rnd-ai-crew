@@ -58,6 +58,38 @@ services:
     networks:
       - local-ai-internal
 
+  hermes-gateway:
+    build:
+      context: ./hermes-gateway
+      dockerfile: Dockerfile
+    container_name: hermes-gateway
+    restart: unless-stopped
+    depends_on:
+      paperclip-server:
+        condition: service_started
+    environment:
+      PAPERCLIP_API_URL: "http://paperclip-server:3100/api"
+      HERMES_API_SERVER_KEY: "${HERMES_API_SERVER_KEY:-}"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
+      TELEGRAM_ALLOWED_USERS: "${TELEGRAM_ALLOWED_USERS:-}"
+      GLM_API_KEY: "${GLM_API_KEY:-}"
+      GLM_BASE_URL: "${GLM_BASE_URL:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      FAL_KEY: "${FAL_KEY:-}"
+      TAVILY_API_KEY: "${TAVILY_API_KEY:-}"
+      PARALLEL_API_KEY: "${PARALLEL_API_KEY:-}"
+      MCP_RAG_API_KEY: "${MCP_RAG_API_KEY:-}"
+    volumes:
+      - hermes_instances:/paperclip/hermes-instances
+      - hermes_venv:/opt/hermes-venv
+      - hermes_src:/opt/hermes-agent-build
+      - ./hermes-agent:/opt/hermes-agent:ro
+      - ./hermes-shared-config:/opt/hermes-shared-config:ro
+      - gateway_ports:/run/gateway-ports
+    networks:
+      - local-ai-internal
+
   paperclip-db:
     image: postgres:17-alpine
     container_name: paperclip-db
@@ -114,6 +146,7 @@ services:
       - ./hermes-paperclip-adapter/dist/server/index.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/index.js:ro
       - ./hermes-paperclip-adapter/dist/server/test.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/test.js:ro
       - ./hermes-paperclip-adapter/dist/server/execute.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/execute.js:ro
+      - gateway_ports:/run/gateway-ports:ro
     networks:
       - local-ai-internal
       - traefik
@@ -143,6 +176,8 @@ volumes:
     name: hermes_instances
   hermes_src:
     name: hermes_src
+  gateway_ports:
+    name: gateway_ports
 
 networks:
   local-ai-internal:
