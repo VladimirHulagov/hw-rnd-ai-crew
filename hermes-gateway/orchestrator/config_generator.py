@@ -23,6 +23,7 @@ def generate_profile_config(
     telegram_bot_token: str | None = None,
     telegram_chat_id: str | None = None,
     telegram_allowed_users: str | None = None,
+    paperclip_api_key: str = "",
 ) -> str:
     template = _TEMPLATE_PATH.read_text()
 
@@ -35,7 +36,7 @@ def generate_profile_config(
         "agent_id": agent_id,
         "company_id": company_id,
         "mcp_rag_api_key": os.environ.get("MCP_RAG_API_KEY", ""),
-        "paperclip_api_key": os.environ.get("PAPERCLIP_API_KEY", ""),
+        "paperclip_api_key": paperclip_api_key,
     }
 
     platforms_lines = [

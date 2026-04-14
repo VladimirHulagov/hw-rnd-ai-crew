@@ -70,6 +70,7 @@ services:
     environment:
       DATABASE_URL: "postgres://paperclip:paperclip@paperclip-db:5432/paperclip"
       PAPERCLIP_API_URL: "http://paperclip-server:3100/api"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET}"
       HERMES_API_SERVER_KEY: "${HERMES_API_SERVER_KEY:-}"
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
       TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
@@ -134,6 +135,7 @@ services:
       TAVILY_API_KEY: "${TAVILY_API_KEY:-}"
       PARALLEL_API_KEY: "${PARALLEL_API_KEY:-}"
       MCP_RAG_API_KEY: "${MCP_RAG_API_KEY:-}"
+      HERMES_API_SERVER_KEY: "${HERMES_API_SERVER_KEY:-}"
     volumes:
       - paperclip_data:/paperclip
       - /mnt/services/gladiator/agents:/mnt/services/gladiator/agents

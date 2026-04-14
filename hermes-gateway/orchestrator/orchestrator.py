@@ -1,6 +1,10 @@
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import logging
+import math
 import os
 import shutil
 import sys
@@ -80,6 +84,31 @@ def fetch_agents_from_db() -> list[dict]:
         return []
 
 
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _create_agent_jwt(agent_id: str, company_id: str) -> str:
+    secret = os.environ.get("BETTER_AUTH_SECRET", "")
+    if not secret:
+        return ""
+    header = _b64url(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    now = math.floor(time.time())
+    claims = _b64url(json.dumps({
+        "sub": agent_id,
+        "company_id": company_id,
+        "adapter_type": "hermes_local",
+        "run_id": "gateway",
+        "iat": now,
+        "exp": now + 86400,
+        "iss": "paperclip",
+        "aud": "paperclip-api",
+    }).encode())
+    signing_input = f"{header}.{claims}"
+    sig = _b64url(hmac.new(secret.encode(), signing_input.encode(), hashlib.sha256).digest())
+    return f"{signing_input}.{sig}"
+
+
 def _write_ports_json(ports: dict[str, int]):
     PORTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     PORTS_FILE.write_text(json.dumps(ports, indent=2) + "\n")
@@ -115,15 +144,18 @@ class Orchestrator:
 
         role = agent.get("role", "")
         name = agent.get("name", "Agent")
+        company_id = agent.get("companyId", agent.get("company_id", ""))
         enable_telegram = bool(telegram_token and telegram_chat_id and role in ("ceo", "cto"))
+        agent_jwt = _create_agent_jwt(agent_id, company_id)
 
         config = generate_profile_config(
             agent_id=agent_id,
-            company_id=agent.get("companyId", agent.get("company_id", "")),
+            company_id=company_id,
             allocated_port=port,
             telegram_bot_token=telegram_token if enable_telegram else None,
             telegram_chat_id=telegram_chat_id if enable_telegram else None,
             telegram_allowed_users=allowed_users if enable_telegram else None,
+            paperclip_api_key=agent_jwt,
         )
 
         config_path = profile_dir / "config.yaml"
