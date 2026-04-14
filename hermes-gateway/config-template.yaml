@@ -1,0 +1,62 @@
+model:
+  default: ${model}
+  provider: ${provider}
+terminal:
+  backend: local
+  cwd: .
+  timeout: 180
+  persistent_shell: true
+compression:
+  enabled: true
+  threshold: 0.6
+  target_ratio: 0.2
+  protect_last_n: 20
+  summary_model: ${summary_model}
+  summary_provider: auto
+auxiliary:
+  vision:
+    provider: ${provider}
+    model: ${vision_model}
+  web_extract:
+    provider: auto
+    timeout: 360
+  session_search:
+    provider: auto
+    timeout: 30
+display:
+  compact: true
+  personality: ${personality}
+  streaming: false
+  tool_progress: result
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  nudge_interval: 10
+approvals:
+  mode: off
+  timeout: 60
+web:
+  backend: tavily
+${platforms_section}
+mcp_servers:
+  rag:
+    url: https://rag.collaborationism.tech/mcp
+    headers:
+      Authorization: "Bearer ${mcp_rag_api_key}"
+    enabled: true
+    timeout: 120
+    connect_timeout: 60
+  paperclip:
+    url: http://paperclip-mcp:8082/mcp
+    headers:
+      X-Paperclip-Api-Key: "${paperclip_api_key}"
+      X-Paperclip-Company-Id: "${company_id}"
+      X-Paperclip-Agent-Id: "${agent_id}"
+    enabled: true
+    timeout: 60
+    connect_timeout: 30
+_config_version: 6
+security:
+  redact_secrets: true
+  tirith_enabled: false
+  tirith_fail_open: true
