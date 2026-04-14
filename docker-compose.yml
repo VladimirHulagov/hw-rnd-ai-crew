@@ -68,6 +68,7 @@ services:
       paperclip-server:
         condition: service_started
     environment:
+      DATABASE_URL: "postgres://paperclip:paperclip@paperclip-db:5432/paperclip"
       PAPERCLIP_API_URL: "http://paperclip-server:3100/api"
       HERMES_API_SERVER_KEY: "${HERMES_API_SERVER_KEY:-}"
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"

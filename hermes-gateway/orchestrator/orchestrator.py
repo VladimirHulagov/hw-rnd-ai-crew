@@ -8,10 +8,15 @@ import time
 from pathlib import Path
 
 import httpx
+import psycopg2
+import psycopg2.extras
 
-from .config_generator import ensure_profile_dirs, generate_profile_config
-from .port_manager import PortManager
-from .supervisor_client import SupervisorClient
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(__file__))
+
+from config_generator import ensure_profile_dirs, generate_profile_config
+from port_manager import PortManager
+from supervisor_client import SupervisorClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +32,7 @@ PORTS_FILE = Path("/run/gateway-ports/ports.json")
 POLL_INTERVAL = int(os.environ.get("ORCHESTRATOR_POLL_INTERVAL", "60"))
 
 PAPERCLIP_API_URL = os.environ.get("PAPERCLIP_API_URL", "http://paperclip-server:3100/api")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgres://paperclip:paperclip@paperclip-db:5432/paperclip")
 HERMES_HOME_DEFAULT = Path.home() / ".hermes"
 
 
@@ -51,18 +57,26 @@ def _ensure_profiles_root():
     return profiles_dir
 
 
-async def fetch_agents(client: httpx.AsyncClient) -> list[dict]:
+def fetch_agents_from_db() -> list[dict]:
     try:
-        resp = await client.get(f"{PAPERCLIP_API_URL}/agents", timeout=10.0)
-        resp.raise_for_status()
-        data = resp.json()
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            return data.get("agents", data.get("items", []))
-        return []
+        conn = psycopg2.connect(DATABASE_URL)
+        conn.set_session(autocommit=True, readonly=True)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT id, name, role, company_id FROM agents ORDER BY name")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        agents = []
+        for row in rows:
+            agents.append({
+                "id": str(row["id"]),
+                "name": row["name"],
+                "role": row["role"],
+                "companyId": str(row["company_id"]),
+            })
+        return agents
     except Exception as e:
-        logger.error("Failed to fetch agents: %s", e)
+        logger.error("Failed to fetch agents from DB: %s", e)
         return []
 
 
@@ -203,22 +217,21 @@ class Orchestrator:
 
     async def run(self):
         logger.info("Orchestrator starting...")
-        logger.info("Paperclip API: %s", PAPERCLIP_API_URL)
+        logger.info("Database: %s", DATABASE_URL.replace("paperclip:paperclip@", "***@") if "paperclip:paperclip" in DATABASE_URL else DATABASE_URL)
         logger.info("Poll interval: %ds", POLL_INTERVAL)
 
         _ensure_hermes_installed()
         _ensure_profiles_root()
 
-        async with httpx.AsyncClient() as client:
-            while True:
-                try:
-                    agents = await fetch_agents(client)
-                    logger.info("Found %d agents, %d gateways running", len(agents), len(self._running_agent_ids))
-                    await self.reconcile(agents)
-                except Exception as e:
-                    logger.error("Reconciliation failed: %s", e)
+        while True:
+            try:
+                agents = fetch_agents_from_db()
+                logger.info("Found %d agents, %d gateways running", len(agents), len(self._running_agent_ids))
+                await self.reconcile(agents)
+            except Exception as e:
+                logger.error("Reconciliation failed: %s", e)
 
-                await asyncio.sleep(POLL_INTERVAL)
+            await asyncio.sleep(POLL_INTERVAL)
 
 
 async def main():

@@ -35,13 +35,24 @@ class SupervisorClient:
             logger.error("Failed to stop %s: %s", name, e)
             return False
 
-    def reload_config(self) -> bool:
+    def reload_config(self) -> list[str]:
         try:
-            self._server.supervisor.reloadConfig()
-            return True
+            result = self._server.supervisor.reloadConfig()
+            if isinstance(result, list) and len(result) > 0:
+                inner = result[0]
+                added = inner[0] if isinstance(inner, (list, tuple)) and len(inner) > 0 else []
+            else:
+                added = []
+            for group in added:
+                try:
+                    self._server.supervisor.addProcessGroup(group)
+                except xmlrpc.client.Fault as e:
+                    if "ALREADY_ADDED" not in str(e):
+                        logger.error("Failed to add group %s: %s", group, e)
+            return added
         except Exception as e:
             logger.error("Failed to reload config: %s", e)
-            return False
+            return []
 
     def get_all_processes(self) -> list[dict]:
         try:
