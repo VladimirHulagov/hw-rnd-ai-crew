@@ -16,3 +16,6 @@
 [submodule "rag-worker"]
 	path = rag-worker
 	url = https://github.com/VladimirHulagov/rag-worker.git
+[submodule "paperclip-mcp"]
+	path = paperclip-mcp
+	url = https://github.com/VladimirHulagov/paperclip-mcp.git
