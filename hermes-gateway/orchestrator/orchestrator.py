@@ -65,6 +65,7 @@ def _patch_installed_agent():
     _patched = []
     for rel in [
         "gateway/platforms/api_server.py",
+        "gateway/platforms/telegram.py",
         "model_tools.py",
         "agent/display.py",
     ]:
@@ -77,6 +78,13 @@ def _patch_installed_agent():
 
     if _patched:
         logger.info("Patched from submodule: %s", ", ".join(_patched))
+
+    bridge_src = Path(__file__).parent / "clarify_bridge.py"
+    bridge_dst = site / "clarify_bridge.py"
+    if bridge_src.exists():
+        if not bridge_dst.exists() or hashlib.md5(bridge_dst.read_bytes()).hexdigest() != hashlib.md5(bridge_src.read_bytes()).hexdigest():
+            shutil.copy2(bridge_src, bridge_dst)
+            _patched.append("clarify_bridge.py")
 
 
 def _ensure_profiles_root():
@@ -106,6 +114,23 @@ def fetch_agents_from_db() -> list[dict]:
     except Exception as e:
         logger.error("Failed to fetch agents from DB: %s", e)
         return []
+
+
+def _fetch_messaging_config() -> dict:
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        conn.set_session(autocommit=True, readonly=True)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT messaging FROM instance_settings WHERE singleton_key = 'default'")
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row and row["messaging"]:
+            return row["messaging"]
+        return {}
+    except Exception as e:
+        logger.error("Failed to fetch messaging config: %s", e)
+        return {}
 
 
 def _b64url(data: bytes) -> str:
@@ -162,23 +187,26 @@ class Orchestrator:
 
         ensure_profile_dirs(profile_dir)
 
-        telegram_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
-        allowed_users = os.environ.get("TELEGRAM_ALLOWED_USERS", "")
+        messaging_config = _fetch_messaging_config()
+        agent_telegram = messaging_config.get("telegram", {})
+        enable_telegram = (
+            agent_telegram.get("enabled", False)
+            and bool(agent_telegram.get("botToken"))
+            and bool(agent_telegram.get("chatId"))
+        )
 
-        role = agent.get("role", "")
         name = agent.get("name", "Agent")
         company_id = agent.get("companyId", agent.get("company_id", ""))
-        enable_telegram = bool(telegram_token and telegram_chat_id and role in ("ceo", "cto"))
         agent_jwt = _create_agent_jwt(agent_id, company_id)
 
         config = generate_profile_config(
             agent_id=agent_id,
             company_id=company_id,
             allocated_port=port,
-            telegram_bot_token=telegram_token if enable_telegram else None,
-            telegram_chat_id=telegram_chat_id if enable_telegram else None,
-            telegram_allowed_users=allowed_users if enable_telegram else None,
+            telegram_bot_token=agent_telegram.get("botToken") if enable_telegram else None,
+            telegram_chat_id=agent_telegram.get("chatId") if enable_telegram else None,
+            telegram_allowed_users=agent_telegram.get("allowedUsers") if enable_telegram else None,
+            telegram_clarify_timeout=agent_telegram.get("defaultTimeout", 600) if enable_telegram else None,
             paperclip_api_key=agent_jwt,
         )
 
@@ -199,6 +227,9 @@ class Orchestrator:
             f"TAVILY_API_KEY={os.environ.get('TAVILY_API_KEY', '')}",
             f"PARALLEL_API_KEY={os.environ.get('PARALLEL_API_KEY', '')}",
             f"FAL_KEY={os.environ.get('FAL_KEY', '')}",
+            f"TELEGRAM_BOT_TOKEN={agent_telegram.get('botToken', '') if enable_telegram else ''}",
+            f"TELEGRAM_CHAT_ID={agent_telegram.get('chatId', '') if enable_telegram else ''}",
+            f"TELEGRAM_CLARIFY_TIMEOUT={agent_telegram.get('defaultTimeout', 600) if enable_telegram else '600'}",
         ])
         (profile_dir / ".env").write_text(env_content + "\n")
 
@@ -216,7 +247,7 @@ class Orchestrator:
             f"[program:{proc_name}]\n"
             f"command={command}\n"
             f"directory=/\n"
-            f"environment=HERMES_HOME=\"{profile_dir}\",PAPERCLIP_RUN_API_KEY=\"{agent_jwt}\"\n"
+            f"environment=HERMES_HOME=\"{profile_dir}\",PAPERCLIP_RUN_API_KEY=\"{agent_jwt}\",TELEGRAM_BOT_TOKEN=\"{agent_telegram.get('botToken', '') if enable_telegram else ''}\",TELEGRAM_CHAT_ID=\"{agent_telegram.get('chatId', '') if enable_telegram else ''}\",TELEGRAM_CLARIFY_TIMEOUT=\"{agent_telegram.get('defaultTimeout', 600) if enable_telegram else '600'}\"\n"
             f"autostart=true\n"
             f"autorestart=true\n"
             f"stdout_logfile=/dev/fd/1\n"
