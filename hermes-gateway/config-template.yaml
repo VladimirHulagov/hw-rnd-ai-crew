@@ -36,7 +36,7 @@ approvals:
   mode: off
   timeout: 60
 web:
-  backend: tavily
+  backend: parallel
 ${platforms_section}
 mcp_servers:
   rag:
@@ -49,7 +49,7 @@ mcp_servers:
   paperclip:
     url: http://paperclip-mcp:8082/mcp
     headers:
-      X-Paperclip-Api-Key: "${paperclip_api_key}"
+      X-Paperclip-Api-Key: "${PAPERCLIP_RUN_API_KEY}"
       X-Paperclip-Company-Id: "${company_id}"
       X-Paperclip-Agent-Id: "${agent_id}"
     enabled: true

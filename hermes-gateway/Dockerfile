@@ -1,6 +1,8 @@
 FROM python:3.11-slim
 
-RUN apt-get update && \
+RUN sed -i 's|deb.debian.org|mirror.yandex.ru|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
+    sed -i 's|deb.debian.org|mirror.yandex.ru|g' /etc/apt/sources.list 2>/dev/null; \
+    apt-get update && \
     apt-get install -y --no-install-recommends git && \
     rm -rf /var/lib/apt/lists/*
 

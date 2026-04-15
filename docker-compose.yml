@@ -149,6 +149,7 @@ services:
       - ./hermes-paperclip-adapter/dist/server/index.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/index.js:ro
       - ./hermes-paperclip-adapter/dist/server/test.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/test.js:ro
       - ./hermes-paperclip-adapter/dist/server/execute.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/execute.js:ro
+      - ./paperclip/ui/dist:/app/ui/dist
       - gateway_ports:/run/gateway-ports:ro
     networks:
       - local-ai-internal

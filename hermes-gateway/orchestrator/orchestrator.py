@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import httpx
@@ -42,6 +43,7 @@ HERMES_HOME_DEFAULT = Path.home() / ".hermes"
 
 def _ensure_hermes_installed():
     if shutil.which("hermes"):
+        _patch_installed_agent()
         return
     logger.info("Installing hermes-agent from source...")
     if not HERMES_BUILD.exists() or not (HERMES_BUILD / "pyproject.toml").exists():
@@ -52,7 +54,29 @@ def _ensure_hermes_installed():
         check=True,
         capture_output=True,
     )
+    _patch_installed_agent()
     logger.info("hermes-agent installed.")
+
+
+def _patch_installed_agent():
+    site = Path("/usr/local/lib/python3.11/site-packages")
+    src_dir = Path(__file__).parent.parent / "hermes-agent"
+
+    _patched = []
+    for rel in [
+        "gateway/platforms/api_server.py",
+        "model_tools.py",
+        "agent/display.py",
+    ]:
+        dst = site / rel
+        src = src_dir / rel
+        if dst.exists() and src.exists():
+            if hashlib.md5(dst.read_bytes()).hexdigest() != hashlib.md5(src.read_bytes()).hexdigest():
+                shutil.copy2(src, dst)
+                _patched.append(rel)
+
+    if _patched:
+        logger.info("Patched from submodule: %s", ", ".join(_patched))
 
 
 def _ensure_profiles_root():
@@ -98,7 +122,7 @@ def _create_agent_jwt(agent_id: str, company_id: str) -> str:
         "sub": agent_id,
         "company_id": company_id,
         "adapter_type": "hermes_local",
-        "run_id": "gateway",
+        "run_id": str(uuid.uuid4()),
         "iat": now,
         "exp": now + 86400,
         "iss": "paperclip",
@@ -192,7 +216,7 @@ class Orchestrator:
             f"[program:{proc_name}]\n"
             f"command={command}\n"
             f"directory=/\n"
-            f"environment=HERMES_HOME=\"{profile_dir}\"\n"
+            f"environment=HERMES_HOME=\"{profile_dir}\",PAPERCLIP_RUN_API_KEY=\"{agent_jwt}\"\n"
             f"autostart=true\n"
             f"autorestart=true\n"
             f"stdout_logfile=/dev/fd/1\n"
