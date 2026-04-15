@@ -23,6 +23,7 @@ def generate_profile_config(
     telegram_bot_token: str | None = None,
     telegram_chat_id: str | None = None,
     telegram_allowed_users: str | None = None,
+    telegram_clarify_timeout: int | None = None,
     paperclip_api_key: str = "",
 ) -> str:
     template = _TEMPLATE_PATH.read_text()
@@ -60,6 +61,8 @@ def generate_profile_config(
             platforms_lines.append(f"      home_channel: \"{telegram_chat_id}\"")
             if telegram_allowed_users:
                 platforms_lines.append(f"      allowed_users: \"{telegram_allowed_users}\"")
+            if telegram_clarify_timeout:
+                platforms_lines.append(f"      clarify_timeout: {telegram_clarify_timeout}")
 
     values["platforms_section"] = "\n".join(platforms_lines)
 
