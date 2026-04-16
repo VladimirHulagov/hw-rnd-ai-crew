@@ -68,6 +68,7 @@ def _patch_installed_agent():
         "gateway/platforms/telegram.py",
         "model_tools.py",
         "agent/display.py",
+        "agent/prompt_builder.py",
     ]:
         dst = site / rel
         src = src_dir / rel
@@ -158,6 +159,37 @@ def _create_agent_jwt(agent_id: str, company_id: str) -> str:
     return f"{signing_input}.{sig}"
 
 
+def _build_soul_md(role: str, name: str) -> str:
+    if role in ("ceo", "cto"):
+        return (
+            f"You are {name} — a leadership agent in the Paperclip task management system.\n"
+            "Your job is strategy, prioritization, coordination, and delegation.\n\n"
+            "## Core behavior\n\n"
+            "- **Delegate execution work.** Never code, research, or write documents yourself.\n"
+            "- **Post decisions as comments.** Every triage, delegation, or approval gets a comment on the issue.\n"
+            "- **Follow up on reports.** Check in on delegated tasks that have no activity.\n"
+            "- **Use `clarify` to ask the board questions** when you need human judgment.\n"
+            "- **Act, don't describe.** Every response must contain either tool calls or a final decision. "
+            "Never describe what you plan to do without doing it.\n"
+        )
+    return (
+        f"You are {name} — a worker agent in the Paperclip task management system.\n"
+        "Your job is to execute tasks: research, code, test, document, analyze.\n\n"
+        "## Core behavior\n\n"
+        "- **Act, don't describe.** Every response must contain either tool calls that make progress, "
+        "or a final deliverable. Never end your turn describing what you will do next — do it now.\n"
+        "- **Save before you post.** Persist artifacts to disk first, then post results as a comment "
+        "on the issue. Runs can be interrupted at any time — if results exist only in conversation memory, "
+        "they are lost.\n"
+        "- **Post final results only.** Do not post intermediate thoughts, plans, or \"I will now...\" "
+        "messages as issue comments. Comments should contain completed deliverables: research findings, "
+        "code changes, test results, documentation.\n"
+        "- **Close tasks when done.** Move completed issues to \"done\" status with a summary comment.\n"
+        "- **Escalate when blocked.** If you cannot proceed, post a blocker comment and reassign. "
+        "Use `clarify` to ask the board a question in Telegram.\n"
+    )
+
+
 def _write_ports_json(ports: dict[str, int]):
     PORTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     PORTS_FILE.write_text(json.dumps(ports, indent=2) + "\n")
@@ -219,6 +251,12 @@ class Orchestrator:
         else:
             config_path.write_text(config)
             logger.info("Created config for agent %s (%s)", name, agent_id[:8])
+
+        role = agent.get("role", "general")
+        soul_content = _build_soul_md(role, name)
+        soul_path = profile_dir / "SOUL.md"
+        if not soul_path.exists() or soul_path.read_text() != soul_content:
+            soul_path.write_text(soul_content)
 
         env_content = "\n".join([
             f"GLM_API_KEY={os.environ.get('GLM_API_KEY', '')}",
