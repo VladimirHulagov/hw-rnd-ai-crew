@@ -57,6 +57,13 @@ services:
       PAPERCLIP_API_URL: "http://paperclip-server:3100/api"
     networks:
       - local-ai-internal
+      - traefik
+    labels:
+      traefik.enable: true
+      traefik.http.routers.paperclip-mcp.rule: Host(`mcp.${SERVER_DOMAIN}`)
+      traefik.http.routers.paperclip-mcp.entrypoints: websecure
+      traefik.http.routers.paperclip-mcp.tls: true
+      traefik.http.services.paperclip-mcp.loadbalancer.server.port: 8082
 
   hermes-gateway:
     build:
