@@ -40,7 +40,7 @@ web:
 ${platforms_section}
 mcp_servers:
   rag:
-    url: https://rag.collaborationism.tech/mcp
+    url: ${MCP_RAG_URL}
     headers:
       Authorization: "Bearer ${mcp_rag_api_key}"
     enabled: true
@@ -56,7 +56,7 @@ mcp_servers:
     timeout: 60
     connect_timeout: 30
   outline:
-    url: https://outline.collaborationism.tech/mcp
+    url: ${MCP_OUTLINE_URL}
     headers:
       Authorization: "Bearer ${outline_api_key}"
     enabled: true
