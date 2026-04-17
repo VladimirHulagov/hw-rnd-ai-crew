@@ -76,6 +76,18 @@ Hermes gateway может держать старый JWT после того к
 
 Решение: валидация в `actorMiddleware` (`auth.ts`) — если `req.actor.runId` из JWT ссылается на несуществующий run, middleware очищает его в `undefined` и логирует warn. Один DB-запрос на запрос, покрывает все downstream FK.
 
+### Agent Memory Service
+
+Векторизованная память агентов — session history и MEMORY.md → Qdrant, доступ через MCP tools.
+
+- **session_indexer.py** — Supervisor процесс в hermes-gateway. Каждые 10 мин сканирует `profiles/*/sessions/*.jsonl` и `memories/MEMORY.md`, извлекает assistant-сообщения, эмбеддит через Ollama (nomic-embed-text, 768d), upsert в Qdrant collection `agent_memory`
+- **memory_mcp_server.py** — MCP StreamableHTTP server на порту 8680. Tools: `search_memory(query)`, `get_agent_context(agent_name)`
+- Индексер отслеживает файлы по mtime+size хэшу (state: `profiles/indexer-state.json`). При ошибке embed файл НЕ помечается обработанным — retry на следующем цикле
+- BATCH_SIZE=1, MAX_TEXT_LEN=1000 — Ollama nomic-embed-text нестабилен на больших батчах/текстах
+- Коллекция Qdrant `agent_memory`: 768d cosine, payload indexes на `agent_name` (keyword), `source` (keyword)
+- Профили агентов персистятся через Docker volume `hermes_profiles` → `/root/.hermes/profiles`
+- Конфигурация: `memory` mcp_server в `config-template.yaml` / `config.yaml`, переменные `OLLAMA_BASE_URL`, `QDRANT_URL`, `EMBED_MODEL`, `MEMORY_API_KEY`
+
 ## Discoveries
 
 ### Budget policies
@@ -122,7 +134,10 @@ Hermes gateway может держать старый JWT после того к
 ### Hermes Gateway:
 - `hermes-gateway/Dockerfile` — Yandex APT mirror
 - `hermes-gateway/orchestrator/orchestrator.py` — orchestrator + `_patch_installed_agent()` (hash-based copy)
-- `docker-compose.yml` — ui/dist bind mount, hermes-gateway service, adapter bind mounts
+- `hermes-gateway/orchestrator/session_indexer.py` — cron indexer for agent memory (Ollama embed → Qdrant)
+- `hermes-gateway/orchestrator/memory_mcp_server.py` — MCP server for `search_memory` / `get_agent_context`
+- `hermes-gateway/supervisord.conf` — session-indexer + memory-mcp programs
+- `docker-compose.yml` — ui/dist bind mount, hermes-gateway service, adapter bind mounts, hermes_profiles volume
 
 ### Hermes Agent (patched submodule):
 - `hermes-agent/gateway/platforms/api_server.py` — `disabled_toolsets=["delegation"]`, MCP paperclip reconnect on JWT update

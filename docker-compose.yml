@@ -90,8 +90,10 @@ services:
       PARALLEL_API_KEY: "${PARALLEL_API_KEY:-}"
       MCP_RAG_API_KEY: "${MCP_RAG_API_KEY:-}"
       MCP_OUTLINE_API_KEY: "${MCP_OUTLINE_API_KEY:-}"
+      MEMORY_API_KEY: "${MEMORY_API_KEY:-}"
     volumes:
       - hermes_instances:/paperclip/hermes-instances
+      - hermes_profiles:/root/.hermes/profiles
       - hermes_venv:/opt/hermes-venv
       - hermes_src:/opt/hermes-agent-build
       - ./hermes-agent:/opt/hermes-agent:ro
@@ -191,6 +193,8 @@ volumes:
     name: hermes_src
   gateway_ports:
     name: gateway_ports
+  hermes_profiles:
+    name: hermes_profiles
 
 networks:
   local-ai-internal:

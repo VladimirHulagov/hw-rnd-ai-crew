@@ -60,6 +60,13 @@ mcp_servers:
     enabled: true
     timeout: 120
     connect_timeout: 60
+  memory:
+    url: http://localhost:8680/mcp
+    headers:
+      Authorization: Bearer ${MEMORY_API_KEY}
+    enabled: true
+    timeout: 30
+    connect_timeout: 10
 _config_version: 6
 security:
   redact_secrets: true
