@@ -161,45 +161,45 @@ def _create_agent_jwt(agent_id: str, company_id: str) -> str:
     return f"{signing_input}.{sig}"
 
 
+PAPERCLIP_DATA_PATH = os.environ.get("PAPERCLIP_DATA_PATH", "/paperclip")
+PAPERCLIP_INSTANCE_ID = os.environ.get("PAPERCLIP_INSTANCE_ID", "default")
+
+
+def _read_paperclip_instructions(agent_id: str, company_id: str) -> str | None:
+    instructions_dir = (
+        Path(PAPERCLIP_DATA_PATH)
+        / "instances" / PAPERCLIP_INSTANCE_ID
+        / "companies" / company_id
+        / "agents" / agent_id
+        / "instructions"
+    )
+    for entry_file in ("AGENTS.md", "instructions.md", "SOUL.md"):
+        p = instructions_dir / entry_file
+        if p.is_file():
+            content = p.read_text()
+            if content.strip():
+                logger.info("Read Paperclip instructions for agent %s from %s", agent_id[:8], p)
+                return content
+    files = sorted(instructions_dir.glob("*.md")) if instructions_dir.is_dir() else []
+    if files:
+        content = files[0].read_text()
+        if content.strip():
+            logger.info("Read Paperclip instructions for agent %s from %s", agent_id[:8], files[0])
+            return content
+    return None
+
+
 def _build_soul_md(role: str, name: str) -> str:
     if role in ("ceo", "cto"):
         return (
-            f"You are {name} — a leadership agent in the Paperclip task management system.\n"
-            "Your job is strategy, prioritization, coordination, and delegation.\n\n"
-            "## Core behavior\n\n"
-            "- **Delegate execution work.** Never code, research, or write documents yourself.\n"
-            "- **Post decisions as comments.** Every triage, delegation, or approval gets a comment on the issue.\n"
-            "- **Follow up on reports.** Check in on delegated tasks that have no activity.\n"
-            "- **Use `clarify` to ask the board questions** when you need human judgment.\n"
-            "- **Act, don't describe.** Every response must contain either tool calls or a final decision. "
-            "Never describe what you plan to do without doing it.\n\n"
-            "## Knowledge base (Outline)\n\n"
-            "- Use `mcp_outline_search` to look up existing knowledge before making decisions.\n"
-            "- When a decision or strategy is finalized, create a document in Outline "
-            "to keep the knowledge base up to date.\n"
+            f"Ты — {name}, руководящий агент в системе управления задачами Paperclip.\n"
+            "Твоя задача — стратегия, приоритизация, координация и делегирование.\n"
+            "Все документы и тексты создавай на русском языке.\n"
         )
     return (
-        f"You are {name} — a worker agent in the Paperclip task management system.\n"
-        "Your job is to execute tasks: research, code, test, document, analyze.\n\n"
-        "## Core behavior\n\n"
-        "- **Act, don't describe.** Every response must contain either tool calls that make progress, "
-        "or a final deliverable. Never end your turn describing what you will do next — do it now.\n"
-        "- **Save before you post.** Persist artifacts to disk first, then post results as a comment "
-        "on the issue. Runs can be interrupted at any time — if results exist only in conversation memory, "
-        "they are lost.\n"
-        "- **Post final results only.** Do not post intermediate thoughts, plans, or \"I will now...\" "
-        "messages as issue comments. Comments should contain completed deliverables: research findings, "
-        "code changes, test results, documentation.\n"
-        "- **Close tasks when done.** Move completed issues to \"done\" status with a summary comment.\n"
-        "- **Escalate when blocked.** If you cannot proceed, post a blocker comment and reassign. "
-        "Use `clarify` to ask the board a question in Telegram.\n\n"
-        "## Knowledge base (Outline)\n\n"
-        "- Before starting research, use `mcp_outline_search` to check if relevant knowledge already exists.\n"
-        "- When you complete research, an investigation, or produce a how-to guide — "
-        "create or update a document in Outline using `mcp_outline_create_document` or "
-        "`mcp_outline_update_document`.\n"
-        "- Write clear, structured documents: use headings, bullet lists, code blocks.\n"
-        "- Avoid creating duplicates — search first, update existing documents when possible.\n"
+        f"Ты — {name}, рабочий агент в системе управления задачами Paperclip.\n"
+        "Твоя задача — выполнять задания: исследование, кодирование, тестирование, документирование, анализ.\n"
+        "Все документы и тексты создавай на русском языке.\n"
     )
 
 
@@ -304,10 +304,12 @@ class Orchestrator:
             logger.info("Created config for agent %s (%s)", name, agent_id[:8])
 
         role = agent.get("role", "general")
-        soul_content = _build_soul_md(role, name)
+        soul_content = _read_paperclip_instructions(agent_id, company_id) or _build_soul_md(role, name)
         soul_path = profile_dir / "SOUL.md"
         if not soul_path.exists() or soul_path.read_text() != soul_content:
             soul_path.write_text(soul_content)
+            if _read_paperclip_instructions(agent_id, company_id):
+                logger.info("Synced Paperclip instructions → SOUL.md for %s", name)
 
         env_content = "\n".join([
             f"GLM_API_KEY={os.environ.get('GLM_API_KEY', '')}",

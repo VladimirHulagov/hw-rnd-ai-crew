@@ -41,6 +41,9 @@ def generate_profile_config(
         "company_id": company_id,
         "mcp_rag_api_key": os.environ.get("MCP_RAG_API_KEY", ""),
         "outline_api_key": os.environ.get("MCP_OUTLINE_API_KEY", ""),
+        "memory_api_key": os.environ.get("MEMORY_API_KEY", ""),
+        "MCP_RAG_URL": os.environ.get("MCP_RAG_URL", ""),
+        "MCP_OUTLINE_URL": os.environ.get("MCP_OUTLINE_URL", ""),
         "paperclip_api_key": paperclip_api_key,
     }
 
