@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import re as re_module
 import shutil
 import sys
 import time
@@ -39,6 +40,14 @@ POLL_INTERVAL = int(os.environ.get("ORCHESTRATOR_POLL_INTERVAL", "60"))
 PAPERCLIP_API_URL = os.environ.get("PAPERCLIP_API_URL", "http://paperclip-server:3100/api")
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgres://paperclip:paperclip@paperclip-db:5432/paperclip")
 HERMES_HOME_DEFAULT = Path.home() / ".hermes"
+
+_BWORD = "\\b"
+
+
+def _mention_patterns_val(enable_telegram: bool, name: str | None) -> str:
+    if not enable_telegram or not name:
+        return ""
+    return _BWORD + re_module.escape(name) + _BWORD
 
 
 def _ensure_hermes_installed():
@@ -99,7 +108,16 @@ def fetch_agents_from_db() -> list[dict]:
         conn = psycopg2.connect(DATABASE_URL)
         conn.set_session(autocommit=True, readonly=True)
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute("SELECT id, name, role, company_id FROM agents ORDER BY name")
+        cur.execute("""
+            SELECT a.id, a.name, a.role, a.company_id, a.adapter_config
+            FROM agents a
+            JOIN company_memberships cm
+                ON cm.principal_id = a.id::text
+                AND cm.principal_type = 'agent'
+            WHERE a.adapter_type = 'hermes_local'
+              AND a.status NOT IN ('terminated', 'paused')
+            ORDER BY a.name
+        """)
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -110,28 +128,12 @@ def fetch_agents_from_db() -> list[dict]:
                 "name": row["name"],
                 "role": row["role"],
                 "companyId": str(row["company_id"]),
+                "adapter_config": row["adapter_config"] or {},
             })
         return agents
     except Exception as e:
         logger.error("Failed to fetch agents from DB: %s", e)
         return []
-
-
-def _fetch_messaging_config() -> dict:
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        conn.set_session(autocommit=True, readonly=True)
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute("SELECT messaging FROM instance_settings WHERE singleton_key = 'default'")
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        if row and row["messaging"]:
-            return row["messaging"]
-        return {}
-    except Exception as e:
-        logger.error("Failed to fetch messaging config: %s", e)
-        return {}
 
 
 def _b64url(data: bytes) -> str:
@@ -170,7 +172,11 @@ def _build_soul_md(role: str, name: str) -> str:
             "- **Follow up on reports.** Check in on delegated tasks that have no activity.\n"
             "- **Use `clarify` to ask the board questions** when you need human judgment.\n"
             "- **Act, don't describe.** Every response must contain either tool calls or a final decision. "
-            "Never describe what you plan to do without doing it.\n"
+            "Never describe what you plan to do without doing it.\n\n"
+            "## Knowledge base (Outline)\n\n"
+            "- Use `mcp_outline_search` to look up existing knowledge before making decisions.\n"
+            "- When a decision or strategy is finalized, create a document in Outline "
+            "to keep the knowledge base up to date.\n"
         )
     return (
         f"You are {name} — a worker agent in the Paperclip task management system.\n"
@@ -186,13 +192,28 @@ def _build_soul_md(role: str, name: str) -> str:
         "code changes, test results, documentation.\n"
         "- **Close tasks when done.** Move completed issues to \"done\" status with a summary comment.\n"
         "- **Escalate when blocked.** If you cannot proceed, post a blocker comment and reassign. "
-        "Use `clarify` to ask the board a question in Telegram.\n"
+        "Use `clarify` to ask the board a question in Telegram.\n\n"
+        "## Knowledge base (Outline)\n\n"
+        "- Before starting research, use `mcp_outline_search` to check if relevant knowledge already exists.\n"
+        "- When you complete research, an investigation, or produce a how-to guide — "
+        "create or update a document in Outline using `mcp_outline_create_document` or "
+        "`mcp_outline_update_document`.\n"
+        "- Write clear, structured documents: use headings, bullet lists, code blocks.\n"
+        "- Avoid creating duplicates — search first, update existing documents when possible.\n"
     )
 
 
 def _write_ports_json(ports: dict[str, int]):
     PORTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     PORTS_FILE.write_text(json.dumps(ports, indent=2) + "\n")
+
+
+def _compute_source_fingerprint() -> str:
+    parts: list[str] = []
+    for p in [Path("/opt/config-template.yaml"), Path(__file__), Path(__file__).parent / "config_generator.py"]:
+        if p.exists():
+            parts.append(p.read_text())
+    return hashlib.sha256("".join(parts).encode()).hexdigest()[:16]
 
 
 class Orchestrator:
@@ -202,12 +223,40 @@ class Orchestrator:
         self.profiles_root = _ensure_profiles_root()
         self._running_agent_ids: set[str] = set()
         self._known_agents: dict[str, dict] = {}
+        self._source_fingerprint: str | None = None
 
     def _profile_dir(self, agent_id: str) -> Path:
         return self.profiles_root / agent_id
 
     def _gateway_name(self, agent_id: str) -> str:
         return f"gateway-{agent_id[:12]}"
+
+    def _check_source_changed(self) -> bool:
+        current = _compute_source_fingerprint()
+        if self._source_fingerprint is None:
+            self._source_fingerprint = current
+            return False
+        if current != self._source_fingerprint:
+            self._source_fingerprint = current
+            return True
+        return False
+
+    def _agent_data_changed(self, agent_id: str, agent: dict) -> bool:
+        stored = self._known_agents.get(agent_id)
+        if not stored:
+            return True
+        return (
+            stored.get("role") != agent.get("role")
+            or stored.get("name") != agent.get("name")
+            or stored.get("adapter_config") != agent.get("adapter_config")
+        )
+
+    async def _restart_agent(self, agent_id: str, agent: dict):
+        proc_name = self._gateway_name(agent_id)
+        logger.info("Restarting agent %s (config or data changed)", agent_id[:8])
+        self.supervisor.stop_process(proc_name)
+        self._running_agent_ids.discard(agent_id)
+        await self.provision_agent(agent)
 
     async def provision_agent(self, agent: dict):
         agent_id = agent.get("id", "")
@@ -219,8 +268,9 @@ class Orchestrator:
 
         ensure_profile_dirs(profile_dir)
 
-        messaging_config = _fetch_messaging_config()
-        agent_telegram = messaging_config.get("telegram", {})
+        adapter_config = agent.get("adapter_config", {}) or {}
+        agent_messaging = adapter_config.get("messaging", {}) or {}
+        agent_telegram = agent_messaging.get("telegram", {})
         enable_telegram = (
             agent_telegram.get("enabled", False)
             and bool(agent_telegram.get("botToken"))
@@ -239,6 +289,7 @@ class Orchestrator:
             telegram_chat_id=agent_telegram.get("chatId") if enable_telegram else None,
             telegram_allowed_users=agent_telegram.get("allowedUsers") if enable_telegram else None,
             telegram_clarify_timeout=agent_telegram.get("defaultTimeout", 600) if enable_telegram else None,
+            agent_name=name,
             paperclip_api_key=agent_jwt,
         )
 
@@ -268,6 +319,9 @@ class Orchestrator:
             f"TELEGRAM_BOT_TOKEN={agent_telegram.get('botToken', '') if enable_telegram else ''}",
             f"TELEGRAM_CHAT_ID={agent_telegram.get('chatId', '') if enable_telegram else ''}",
             f"TELEGRAM_CLARIFY_TIMEOUT={agent_telegram.get('defaultTimeout', 600) if enable_telegram else '600'}",
+            f"TELEGRAM_ALLOWED_USERS={agent_telegram.get('allowedUsers', '') if enable_telegram else ''}",
+            "TELEGRAM_REQUIRE_MENTION=true",
+            f"TELEGRAM_MENTION_PATTERNS={_mention_patterns_val(enable_telegram, name)}",
         ])
         (profile_dir / ".env").write_text(env_content + "\n")
 
@@ -285,7 +339,7 @@ class Orchestrator:
             f"[program:{proc_name}]\n"
             f"command={command}\n"
             f"directory=/\n"
-            f"environment=HERMES_HOME=\"{profile_dir}\",PAPERCLIP_RUN_API_KEY=\"{agent_jwt}\",TELEGRAM_BOT_TOKEN=\"{agent_telegram.get('botToken', '') if enable_telegram else ''}\",TELEGRAM_CHAT_ID=\"{agent_telegram.get('chatId', '') if enable_telegram else ''}\",TELEGRAM_CLARIFY_TIMEOUT=\"{agent_telegram.get('defaultTimeout', 600) if enable_telegram else '600'}\"\n"
+            f"environment=HERMES_HOME=\"{profile_dir}\",PAPERCLIP_RUN_API_KEY=\"{agent_jwt}\",TELEGRAM_BOT_TOKEN=\"{agent_telegram.get('botToken', '') if enable_telegram else ''}\",TELEGRAM_CHAT_ID=\"{agent_telegram.get('chatId', '') if enable_telegram else ''}\",TELEGRAM_CLARIFY_TIMEOUT=\"{agent_telegram.get('defaultTimeout', 600) if enable_telegram else '600'}\",TELEGRAM_ALLOWED_USERS=\"{agent_telegram.get('allowedUsers', '') if enable_telegram else ''}\",TELEGRAM_REQUIRE_MENTION=\"true\"\n"
             f"autostart=true\n"
             f"autorestart=true\n"
             f"stdout_logfile=/dev/fd/1\n"
@@ -326,11 +380,17 @@ class Orchestrator:
 
     async def reconcile(self, agents: list[dict]):
         current_ids = {a.get("id") for a in agents if a.get("id")}
+        source_changed = self._check_source_changed()
 
         for agent in agents:
             agent_id = agent.get("id", "")
-            if agent_id not in self._running_agent_ids:
-                await self.provision_agent(agent)
+            try:
+                if agent_id not in self._running_agent_ids:
+                    await self.provision_agent(agent)
+                elif source_changed or self._agent_data_changed(agent_id, agent):
+                    await self._restart_agent(agent_id, agent)
+            except Exception as e:
+                logger.error("Failed to reconcile agent %s (%s): %s", agent.get("name", "?"), agent_id[:8], e)
             self._known_agents[agent_id] = agent
 
         for agent_id in list(self._running_agent_ids):

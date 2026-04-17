@@ -1,4 +1,6 @@
+import json
 import os
+import re
 import string
 from pathlib import Path
 
@@ -24,6 +26,7 @@ def generate_profile_config(
     telegram_chat_id: str | None = None,
     telegram_allowed_users: str | None = None,
     telegram_clarify_timeout: int | None = None,
+    agent_name: str | None = None,
     paperclip_api_key: str = "",
 ) -> str:
     template = _TEMPLATE_PATH.read_text()
@@ -37,6 +40,7 @@ def generate_profile_config(
         "agent_id": agent_id,
         "company_id": company_id,
         "mcp_rag_api_key": os.environ.get("MCP_RAG_API_KEY", ""),
+        "outline_api_key": os.environ.get("MCP_OUTLINE_API_KEY", ""),
         "paperclip_api_key": paperclip_api_key,
     }
 
@@ -56,6 +60,9 @@ def generate_profile_config(
             "    enabled: true",
             f"    token: \"{telegram_bot_token}\"",
         ])
+        mention_patterns = []
+        if agent_name:
+            mention_patterns.append(f"\\b{re.escape(agent_name)}\\b")
         if telegram_chat_id:
             platforms_lines.append("    extra:")
             platforms_lines.append(f"      home_channel: \"{telegram_chat_id}\"")
@@ -63,6 +70,9 @@ def generate_profile_config(
                 platforms_lines.append(f"      allowed_users: \"{telegram_allowed_users}\"")
             if telegram_clarify_timeout:
                 platforms_lines.append(f"      clarify_timeout: {telegram_clarify_timeout}")
+            platforms_lines.append("      require_mention: true")
+            if mention_patterns:
+                platforms_lines.append(f"      mention_patterns: {json.dumps(mention_patterns)}")
 
     values["platforms_section"] = "\n".join(platforms_lines)
 

@@ -89,6 +89,7 @@ services:
       TAVILY_API_KEY: "${TAVILY_API_KEY:-}"
       PARALLEL_API_KEY: "${PARALLEL_API_KEY:-}"
       MCP_RAG_API_KEY: "${MCP_RAG_API_KEY:-}"
+      MCP_OUTLINE_API_KEY: "${MCP_OUTLINE_API_KEY:-}"
     volumes:
       - hermes_instances:/paperclip/hermes-instances
       - hermes_venv:/opt/hermes-venv
@@ -142,6 +143,7 @@ services:
       TAVILY_API_KEY: "${TAVILY_API_KEY:-}"
       PARALLEL_API_KEY: "${PARALLEL_API_KEY:-}"
       MCP_RAG_API_KEY: "${MCP_RAG_API_KEY:-}"
+      MCP_OUTLINE_API_KEY: "${MCP_OUTLINE_API_KEY:-}"
       HERMES_API_SERVER_KEY: "${HERMES_API_SERVER_KEY:-}"
     volumes:
       - paperclip_data:/paperclip

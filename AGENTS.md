@@ -18,9 +18,11 @@ HW RND AI Crew is a Docker Compose stack providing RAG over Nextcloud files, Pap
 - Единый Docker-контейнер `hermes-gateway` с Supervisor PID 1, Python orchestrator, N gateway процессов (один на агента)
 - Hermes profiles: каждый агент получает свой `~/.hermes/profiles/<agentId>/` с config.yaml, memories/, skills/, sessions/
 - Orchestrator опрашивает PostgreSQL напрямую каждые 60 секунд
+- Provizioning: только агенты из `company_memberships` (principal_type='agent') с `adapter_type='hermes_local'` и status не terminated/paused
 - Порт-маппинг: `/run/gateway-ports/ports.json` — agent_id → port (8642-8673), shared volume с paperclip-server
 - Адаптер: HTTP POST к `http://hermes-gateway:<port>/v1/runs` (structured event streaming)
 - `hermes-paperclip-adapter` submodule — bind-mounted в контейнер paperclip-server (ro), пересборка: `docker exec ... esbuild` в контейнере paperclip-server
+- Hot-reload: hash fingerprint (config-template.yaml + orchestrator.py + config_generator.py) — при изменении исходников оркестратор перезапускает агентов автоматически
 
 ### JWT Auth flow
 
@@ -30,6 +32,26 @@ HW RND AI Crew is a Docker Compose stack providing RAG over Nextcloud files, Pap
 4. Адаптер прокидывает JWT в `POST /v1/runs` как `paperclip_api_key`
 5. Gateway `api_server.py` обновляет `os.environ["PAPERCLIP_RUN_API_KEY"]` и **пересоздаёт** MCP-подключение paperclip (отключает старое, при создании агента MCP подключается с новым JWT)
 6. MCP tools используют JWT в заголовке `X-Paperclip-Api-Key`
+
+### Outline MCP (knowledge base)
+
+- Endpoint: `https://outline.collaborationism.tech/mcp` (StreamableHTTP)
+- Auth: shared API token (`ol_api_...`) в `Authorization: Bearer` заголовке
+- Env var: `MCP_OUTLINE_API_KEY` в `.env`, прокидывается в `hermes-gateway` и `paperclip-server`
+- Конфигурация: `hermes-gateway/config-template.yaml` и `hermes-shared-config/config.yaml`
+- Инструкции агентам: в `_build_soul_md()` (`orchestrator.py`)
+- Агенты используют `mcp_outline_*` tools для поиска и создания/обновления документов
+- Перед созданием документа — всегда поиск (`mcp_outline_search`), чтобы избежать дубликатов
+
+### Per-Agent Messaging (Telegram)
+
+- Messaging конфиг хранится в `agents.adapter_config.messaging.telegram` (per-agent, jsonb)
+- Оркестратор читает `adapter_config` из БД и подставляет telegram конфиг в config.yaml агента
+- Каждый агент может иметь свой Telegram bot token
+- UI: вкладка "Messaging" на странице агента (AgentDetail)
+- Instance-level messaging (`instance_settings.messaging`) больше не используется
+- **Group trigger**: `require_mention=true` + `mention_patterns` из имени агента (regexp `\b<AgentName>\b`). Агент отвечает в группе только если: reply на его сообщение, @mention, или имя в тексте
+- `TELEGRAM_ALLOWED_USERS` пробрасывается из `adapter_config.messaging.telegram.allowedUsers` — пользователи авторизуются автоматически без pairing code
 
 ### MCP JWT staleness (исправлено)
 
@@ -48,6 +70,12 @@ Paperclip heartbeat service читает `adapterResult.resultJson` для:
 
 `get_tool_definitions()` в `model_tools.py` — когда передан `enabled_toolsets`, блок `disabled_toolsets` полностью игнорировался (баг в оригинале). Исправлено: `disabled_toolsets` обрабатывается **после** `enabled_toolsets`, исключая инструменты из собранного набора.
 
+### Stale JWT run_id FK violation (исправлено)
+
+Hermes gateway может держать старый JWT после того как соответствующий `heartbeat_run` удалён (reaped orphaned runs, server restart, etc). Все таблицы с FK на `heartbeat_runs.id` (`issue_comments.created_by_run_id`, `document_revisions.created_by_run_id`, `activity_log.run_id`) ломались с 500 при INSERT.
+
+Решение: валидация в `actorMiddleware` (`auth.ts`) — если `req.actor.runId` из JWT ссылается на несуществующий run, middleware очищает его в `undefined` и логирует warn. Один DB-запрос на запрос, покрывает все downstream FK.
+
 ## Discoveries
 
 ### Budget policies
@@ -57,6 +85,7 @@ Paperclip heartbeat service читает `adapterResult.resultJson` для:
 ### paperclip-server deployment
 - Контейнер `paperclip-server` работает из образа `paperclip-server:latest`. Исходники в `/app/server/dist/` — скомпилированный ESM JS
 - **UI dist bind-mounted**: `./paperclip/ui/dist:/app/ui/dist` (rw) — Vite build в контейнере пишет на хост
+- **UI src НЕ bind-mounted** — перед `vite build` нужно `docker cp paperclip/ui/src/... paperclip-server:/app/ui/src/...` для каждого изменённого файла
 - **Server dist НЕ bind-mounted** — нужен `docker cp` + `docker compose restart` для серверных фиксов
 - **Adapter bind-mounted (ro)**: `./hermes-paperclip-adapter/dist/` → отдельные файлы в `/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/...`
 - UI: `docker exec -w /app/ui paperclip-server node node_modules/vite/bin/vite.js build`
@@ -84,6 +113,10 @@ Paperclip heartbeat service читает `adapterResult.resultJson` для:
 - Yandex APT mirror (`mirror.yandex.ru`) работает для Debian Trixie
 - Yandex pip mirror (`pypi.yandex-team.ru`) **недоступен** — fallback на PyPI
 
+### formatDateTime без настроек (исправлено)
+- Многие компоненты вызывают bare `formatDateTime()` из `lib/utils.ts` без `{ timezone, timeFormat }` — всегда 12h по умолчанию
+- Исправлено: `CommentThread.tsx`, `FinanceTimelineCard`, `LiveRunWidget`, `ExecutionWorkspaceDetail`, `InstanceSettings`, `ExecutionWorkspaceCloseDialog` — все используют `useTimeSettings()` hook
+
 ## Relevant files / directories
 
 ### Hermes Gateway:
@@ -106,6 +139,7 @@ Paperclip heartbeat service читает `adapterResult.resultJson` для:
 - `paperclip/ui/src/pages/InstanceGeneralSettings.tsx` — Regional block (timezone + 24h)
 - `paperclip/ui/src/lib/utils.ts` — formatDateTime/formatDate с timezone opts
 - `paperclip/ui/src/hooks/useTimeSettings.ts` — timezone, timeFormat hooks
+- `paperclip/ui/src/components/CommentThread.tsx` — использует `useTimeSettings()` для 24h/12h
 - `paperclip/ui/src/components/transcript/RunTranscriptView.tsx` — timestamps, Brain icon, filters
 
 ### Paperclip Server (modified):
