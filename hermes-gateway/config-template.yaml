@@ -55,6 +55,13 @@ mcp_servers:
     enabled: true
     timeout: 60
     connect_timeout: 30
+  outline:
+    url: https://outline.collaborationism.tech/mcp
+    headers:
+      Authorization: "Bearer ${outline_api_key}"
+    enabled: true
+    timeout: 120
+    connect_timeout: 60
 _config_version: 6
 security:
   redact_secrets: true
