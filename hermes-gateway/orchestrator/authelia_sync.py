@@ -3,7 +3,7 @@ import logging
 import os
 
 import yaml
-from argon2 import PasswordHasher
+from argon2 import PasswordHasher, Type
 
 logger = logging.getLogger("gateway-orchestrator.authelia")
 
@@ -18,7 +18,7 @@ def _generate_locked_password() -> str:
         parallelism=4,
         hash_len=32,
         salt_len=16,
-        type=2,
+        type=Type.ID,
     )
     return ph.hash(raw)
 
