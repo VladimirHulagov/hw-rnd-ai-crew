@@ -52,6 +52,11 @@ HW RND AI Crew is a Docker Compose stack providing RAG over Nextcloud files, Pap
 - Агенты используют `search_outline` для чтения/поиска документов Outline (вместо `mcp_outline_*`)
 - `mcp_outline_*` используется только для создания и обновления документов
 - Env vars: `OUTLINE_URL`, `OUTLINE_API_KEY`, `OUTLINE_SYNC_INTERVAL` (default 300s), `OUTLINE_QDRANT_COLLECTION` (default `outline_docs`)
+- Outline API возвращает Markdown через поле `text` в `/api/documents.info` (не нужен `?format=markdown`)
+- Sync запускается через FastAPI `lifespan` (daemon thread) — логи daemon thread не видны в `docker logs`, но sync работает (проверка: `docker exec rag-worker python -c "from rag.main import sync_outline; print(sync_outline())"`)
+- `/status/outline` endpoint — кол-во документов и чанков
+- Env vars `OUTLINE_*` дублируются в `docker-compose.yml` `environment` (не только `env_file`) — нужно для корректного проброса при пустых значениях в `.env`
+- rag-worker и rag-mcp — git submodules. Коммиты внутри submodule не видны в основном репо пока не обновить submodule reference
 
 ### Per-Agent Messaging (Telegram)
 
@@ -139,6 +144,18 @@ Hermes gateway может держать старый JWT после того к
 - Многие компоненты вызывают bare `formatDateTime()` из `lib/utils.ts` без `{ timezone, timeFormat }` — всегда 12h по умолчанию
 - Исправлено: `CommentThread.tsx`, `FinanceTimelineCard`, `LiveRunWidget`, `ExecutionWorkspaceDetail`, `InstanceSettings`, `ExecutionWorkspaceCloseDialog` — все используют `useTimeSettings()` hook
 
+### FastAPI on_event deprecation
+- FastAPI >= 0.100 deprecated `@app.on_event("startup")` — в 0.136+ не вызывается
+- Решение: `lifespan` context manager (`from contextlib import asynccontextmanager`)
+- rag-worker использует lifespan для запуска Outline sync background thread
+
+### Outline API
+- `/api/documents.list` — пагинация через `offset`/`limit`, `pagination.total` для определения конца
+- `/api/documents.info` — поле `text` содержит Markdown по умолчанию (не ProseMirror)
+- `updatedAt` — ISO 8601 формат (`2026-04-19T10:00:00.000Z`), парсинг через `datetime.fromisoformat`
+- `isDeleted: true` — мягкое удаление, нужно фильтровать при list
+- Auth: `Authorization: Bearer ol_api_...` заголовок
+
 ## Relevant files / directories
 
 ### Hermes Gateway:
@@ -148,6 +165,16 @@ Hermes gateway может держать старый JWT после того к
 - `hermes-gateway/orchestrator/memory_mcp_server.py` — MCP server for `search_memory` / `get_agent_context`
 - `hermes-gateway/supervisord.conf` — session-indexer + memory-mcp programs
 - `docker-compose.yml` — ui/dist bind mount, hermes-gateway service, adapter bind mounts, hermes_profiles volume
+
+### RAG Worker (Outline RAG):
+- `rag-worker/rag/outline.py` — Outline REST API client (`list_documents`, `get_document_markdown`, `list_collections`)
+- `rag-worker/rag/main.py` — `sync_outline()` (incremental sync), background thread (lifespan), `/status/outline` endpoint
+- `rag-worker/rag/qdrant_client.py` — outline collection helpers (`ensure_outline_collection`, `upsert_outline_chunks`, etc.)
+- `rag-worker/tests/test_outline.py` — Outline client unit tests (mock httpx)
+
+### RAG MCP (Outline search):
+- `rag-mcp/mcp_server/tools.py` — `search_outline()`, `list_outline_documents()` + existing Nextcloud tools
+- `rag-mcp/mcp_server/main.py` — MCP tool registration, StreamableHTTP transport
 
 ### Hermes Agent (patched submodule):
 - `hermes-agent/gateway/platforms/api_server.py` — `disabled_toolsets=["delegation"]`, MCP paperclip reconnect on JWT update
