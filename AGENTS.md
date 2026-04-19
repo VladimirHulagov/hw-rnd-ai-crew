@@ -202,3 +202,26 @@ Hermes gateway может держать старый JWT после того к
 ### Shared package (modified):
 - `paperclip/packages/shared/src/types/instance.ts` — TimeFormat type, timezone/timeFormat fields
 - `paperclip/packages/shared/src/validators/instance.ts` — timezone/timeFormat zod schemas
+
+## Discoveries
+
+### Roles system
+- `assignedRole` must be in `createAgentSchema` (Zod validator) or `validate()` strips it from `req.body` silently
+- `resolveRoleKey()` must check UUID format before querying UUID column — otherwise PostgresError on string keys like `agency-agents/marketing/foo`
+- `role_sources` DELETE needs cascade: first delete `company_roles` with matching `sourceId`, then delete source
+- `materializeDefaultInstructionsBundleForNewAgent`: when `promptTemplate` is non-empty (from role), it only created `AGENTS.md`. Fixed to merge default bundle files (HEARTBEAT.md, SOUL.md) with role's AGENTS.md
+- Default agent bundle: `["AGENTS.md", "HEARTBEAT.md", "SOUL.md"]` — same structure as CEO minus TOOLS.md
+- Onboarding assets resolved from `dist/onboarding-assets/` (not `src/`) — new files must be copied to both locations in container
+
+### ServiceWorker cache
+- `sw.js` uses `CACHE_NAME` version string — must bump on every UI deploy or browser serves stale assets
+- Firefox caches aggressively — even Ctrl+Shift+R insufficient. Must bump `CACHE_NAME` and deploy updated `sw.js`
+
+### Context compression
+- Hermes config `compression.threshold` controls when context auto-compresses (fraction of model context length)
+- Changed from 0.6 (60%) to 0.85 (85%) — agents use more context before compression kicks in
+- Config hot-reload via hash fingerprint in orchestrator — change `config-template.yaml` + bump `_config_version`
+
+### Hermes adapter config
+- `buildSchemaAdapterConfig()` does NOT include `promptTemplate` — it's adapter-agnostic and handled server-side
+- Backend fills `promptTemplate` from role markdown when `assignedRole` is provided and `promptTemplate` is empty
