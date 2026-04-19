@@ -29,6 +29,11 @@ services:
     container_name: rag-worker
     restart: unless-stopped
     env_file: .env
+    environment:
+      OUTLINE_URL: "${OUTLINE_URL:-}"
+      OUTLINE_API_KEY: "${OUTLINE_API_KEY:-}"
+      OUTLINE_SYNC_INTERVAL: "${OUTLINE_SYNC_INTERVAL:-300}"
+      OUTLINE_QDRANT_COLLECTION: "${OUTLINE_QDRANT_COLLECTION:-outline_docs}"
     networks:
       - local-ai-internal
       - nextcloud-rag
@@ -153,6 +158,11 @@ services:
       MCP_OUTLINE_API_KEY: "${MCP_OUTLINE_API_KEY:-}"
       MCP_OUTLINE_URL: "${MCP_OUTLINE_URL:-}"
       HERMES_API_SERVER_KEY: "${HERMES_API_SERVER_KEY:-}"
+      OLLAMA_BASE_URL: "http://ollama:11434"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
     volumes:
       - paperclip_data:/paperclip
       - /mnt/services/gladiator/agents:/mnt/services/gladiator/agents
@@ -163,7 +173,9 @@ services:
       - hermes_venv:/opt/hermes-venv
       - hermes_instances:/paperclip/hermes-instances
       - ./hermes-paperclip-adapter/dist/shared/constants.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/shared/constants.js:ro
+      - ./hermes-paperclip-adapter/dist/index.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/index.js:ro
       - ./hermes-paperclip-adapter/dist/server/index.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/index.js:ro
+      - ./hermes-paperclip-adapter/dist/server/models.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/models.js:ro
       - ./hermes-paperclip-adapter/dist/server/test.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/test.js:ro
       - ./hermes-paperclip-adapter/dist/server/execute.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/execute.js:ro
       - ./paperclip/ui/dist:/app/ui/dist
