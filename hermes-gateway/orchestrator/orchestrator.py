@@ -189,17 +189,45 @@ def _read_paperclip_instructions(agent_id: str, company_id: str) -> str | None:
     return None
 
 
+def _sync_bundle_files(agent_id: str, company_id: str, profile_dir: Path):
+    instructions_dir = (
+        Path(PAPERCLIP_DATA_PATH)
+        / "instances" / PAPERCLIP_INSTANCE_ID
+        / "companies" / company_id
+        / "agents" / agent_id
+        / "instructions"
+    )
+    if not instructions_dir.is_dir():
+        return
+    for f in instructions_dir.iterdir():
+        if not f.is_file() or not f.name.endswith(".md"):
+            continue
+        dst = profile_dir / f.name
+        content = f.read_text()
+        if not dst.exists() or dst.read_text() != content:
+            dst.write_text(content)
+            logger.info("Synced %s → %s for agent %s", f.name, dst, agent_id[:8])
+
+
 def _build_soul_md(role: str, name: str) -> str:
+    outline_guidance = (
+        "\n## Outline (knowledge base)\n"
+        "- Для поиска и чтения документов Outline используй `search_outline` (rag-mcp) — он возвращает компактные Markdown-фрагменты.\n"
+        "- Для создания и обновления документов используй `mcp_outline_*` (Outline MCP).\n"
+        "- НЕ читай полные документы через `mcp_outline_*` — это вызывает context overflow из-за ProseMirror JSON.\n"
+    )
     if role in ("ceo", "cto"):
         return (
             f"Ты — {name}, руководящий агент в системе управления задачами Paperclip.\n"
             "Твоя задача — стратегия, приоритизация, координация и делегирование.\n"
             "Все документы и тексты создавай на русском языке.\n"
+            + outline_guidance
         )
     return (
         f"Ты — {name}, рабочий агент в системе управления задачами Paperclip.\n"
         "Твоя задача — выполнять задания: исследование, кодирование, тестирование, документирование, анализ.\n"
         "Все документы и тексты создавай на русском языке.\n"
+        + outline_guidance
     )
 
 
@@ -310,6 +338,8 @@ class Orchestrator:
             soul_path.write_text(soul_content)
             if _read_paperclip_instructions(agent_id, company_id):
                 logger.info("Synced Paperclip instructions → SOUL.md for %s", name)
+
+        _sync_bundle_files(agent_id, company_id, profile_dir)
 
         env_content = "\n".join([
             f"GLM_API_KEY={os.environ.get('GLM_API_KEY', '')}",
