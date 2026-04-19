@@ -151,7 +151,8 @@ Hermes gateway может держать старый JWT после того к
 
 ### Outline API
 - `/api/documents.list` — пагинация через `offset`/`limit`, `pagination.total` для определения конца
-- `/api/documents.info` — поле `text` содержит Markdown по умолчанию (не ProseMirror)
+- `/api/documents.info` — поле `text` содержит Markdown. Внутреннее хранение — ProseMirror JSON (`data.content`), API конвертирует Markdown↔ProseMirror при записи/чтении. Ответ содержит оба формата, но `text` — всегда Markdown
+- Запись (create/update): принимает Markdown через параметр `text`
 - `updatedAt` — ISO 8601 формат (`2026-04-19T10:00:00.000Z`), парсинг через `datetime.fromisoformat`
 - `isDeleted: true` — мягкое удаление, нужно фильтровать при list
 - Auth: `Authorization: Bearer ol_api_...` заголовок
