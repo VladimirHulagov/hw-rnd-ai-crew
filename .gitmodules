@@ -19,3 +19,6 @@
 [submodule "paperclip-mcp"]
 	path = paperclip-mcp
 	url = https://github.com/VladimirHulagov/paperclip-mcp.git
+[submodule "agency-agents"]
+	path = agency-agents
+	url = https://github.com/VladimirHulagov/agency-agents.git
