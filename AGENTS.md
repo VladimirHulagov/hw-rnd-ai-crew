@@ -44,6 +44,15 @@ HW RND AI Crew is a Docker Compose stack providing RAG over Nextcloud files, Pap
 - Агенты используют `mcp_outline_*` tools для поиска и создания/обновления документов
 - Перед созданием документа — всегда поиск (`mcp_outline_search`), чтобы избежать дубликатов
 
+### Outline RAG (search)
+
+- rag-worker индексирует документы Outline → Qdrant коллекция `outline_docs` (markdown chunks)
+- rag-mcp предоставляет tool `search_outline` для семантического поиска
+- `list_outline_documents` — просмотр проиндексированных документов
+- Агенты используют `search_outline` для чтения/поиска документов Outline (вместо `mcp_outline_*`)
+- `mcp_outline_*` используется только для создания и обновления документов
+- Env vars: `OUTLINE_URL`, `OUTLINE_API_KEY`, `OUTLINE_SYNC_INTERVAL` (default 300s), `OUTLINE_QDRANT_COLLECTION` (default `outline_docs`)
+
 ### Per-Agent Messaging (Telegram)
 
 - Messaging конфиг хранится в `agents.adapter_config.messaging.telegram` (per-agent, jsonb)
