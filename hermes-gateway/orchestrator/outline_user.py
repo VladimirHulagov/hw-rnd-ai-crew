@@ -1,7 +1,8 @@
-import base64
 import hashlib
 import logging
 import os
+import secrets
+import string
 import uuid
 from datetime import datetime, timezone
 
@@ -17,8 +18,8 @@ OUTLINE_DB_URL = os.environ.get("OUTLINE_DB_URL", "")
 
 
 def _generate_api_key() -> str:
-    raw = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
-    return f"ol_api_{raw}"
+    chars = string.ascii_letters + string.digits + "_"
+    return "ol_api_" + "".join(secrets.choice(chars) for _ in range(38))
 
 
 def _find_outline_user(name: str) -> str | None:
