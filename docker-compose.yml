@@ -100,6 +100,9 @@ services:
       MEMORY_API_KEY: "${MEMORY_API_KEY:-}"
       PAPERCLIP_DATA_PATH: "/paperclip"
       AUTHELIA_USERS_FILE: "/authelia-config/users_database.yml"
+      OUTLINE_URL: "${OUTLINE_URL:-}"
+      OUTLINE_API_KEY: "${OUTLINE_API_KEY:-}"
+      OUTLINE_DB_URL: "${OUTLINE_DB_URL:-}"
     volumes:
       - hermes_instances:/paperclip/hermes-instances
       - paperclip_data:/paperclip:ro
@@ -112,6 +115,7 @@ services:
       - /mnt/services/authelia/config:/authelia-config:rw
     networks:
       - local-ai-internal
+      - outline_internal
 
   paperclip-db:
     image: postgres:17-alpine
@@ -225,4 +229,7 @@ networks:
     external: true
   traefik:
     name: traefik-public
+    external: true
+  outline_internal:
+    name: outline_internal
     external: true
