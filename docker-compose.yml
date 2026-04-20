@@ -99,7 +99,6 @@ services:
       MCP_OUTLINE_URL: "${MCP_OUTLINE_URL:-}"
       MEMORY_API_KEY: "${MEMORY_API_KEY:-}"
       PAPERCLIP_DATA_PATH: "/paperclip"
-      AUTHELIA_USERS_FILE: "/authelia-config/users_database.yml"
       OUTLINE_URL: "${OUTLINE_URL:-}"
       OUTLINE_API_KEY: "${OUTLINE_API_KEY:-}"
       OUTLINE_DB_URL: "${OUTLINE_DB_URL:-}"
@@ -112,7 +111,6 @@ services:
       - ./hermes-agent:/opt/hermes-agent:ro
       - ./hermes-shared-config:/opt/hermes-shared-config:ro
       - gateway_ports:/run/gateway-ports
-      - /mnt/services/authelia/config:/authelia-config:rw
     networks:
       - local-ai-internal
       - outline_internal

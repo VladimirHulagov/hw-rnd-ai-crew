@@ -22,7 +22,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from config_generator import ensure_profile_dirs, generate_profile_config
 from port_manager import PortManager
-from authelia_sync import ensure_authelia_user, rename_authelia_user
 from outline_user import ensure_outline_user
 from supervisor_client import SupervisorClient
 
@@ -402,11 +401,6 @@ class Orchestrator:
         _write_ports_json(self.port_manager.get_all())
         logger.info("Gateway %s started (port %d, profile %s)", proc_name, port, profile_dir)
 
-        try:
-            ensure_authelia_user(name)
-        except Exception:
-            logger.error("Failed to create Authelia user for %s", name)
-
     async def deprovision_agent(self, agent_id: str):
         proc_name = self._gateway_name(agent_id)
         logger.info("Stopping gateway for agent %s", agent_id[:8])
@@ -437,14 +431,6 @@ class Orchestrator:
                     await self._restart_agent(agent_id, agent)
             except Exception as e:
                 logger.error("Failed to reconcile agent %s (%s): %s", agent.get("name", "?"), agent_id[:8], e)
-            if agent_id in self._known_agents:
-                old_name = self._known_agents[agent_id].get("name", "")
-                new_name = agent.get("name", "")
-                if old_name and new_name and old_name != new_name:
-                    try:
-                        rename_authelia_user(old_name, new_name)
-                    except Exception:
-                        logger.error("Failed to rename Authelia user '%s' -> '%s'", old_name, new_name)
             self._known_agents[agent_id] = agent
 
         for agent_id in list(self._running_agent_ids):
