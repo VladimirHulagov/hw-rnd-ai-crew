@@ -28,6 +28,7 @@ def generate_profile_config(
     telegram_clarify_timeout: int | None = None,
     agent_name: str | None = None,
     paperclip_api_key: str = "",
+    outline_api_key: str | None = None,
 ) -> str:
     template = _TEMPLATE_PATH.read_text()
 
@@ -40,7 +41,7 @@ def generate_profile_config(
         "agent_id": agent_id,
         "company_id": company_id,
         "mcp_rag_api_key": os.environ.get("MCP_RAG_API_KEY", ""),
-        "outline_api_key": os.environ.get("MCP_OUTLINE_API_KEY", ""),
+        "outline_api_key": outline_api_key or os.environ.get("MCP_OUTLINE_API_KEY", ""),
         "memory_api_key": os.environ.get("MEMORY_API_KEY", ""),
         "MCP_RAG_URL": os.environ.get("MCP_RAG_URL", ""),
         "MCP_OUTLINE_URL": os.environ.get("MCP_OUTLINE_URL", ""),
