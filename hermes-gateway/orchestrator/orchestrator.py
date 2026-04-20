@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from config_generator import ensure_profile_dirs, generate_profile_config
 from port_manager import PortManager
 from authelia_sync import ensure_authelia_user, rename_authelia_user
+from outline_user import ensure_outline_user
 from supervisor_client import SupervisorClient
 
 logging.basicConfig(
@@ -310,6 +311,12 @@ class Orchestrator:
         company_id = agent.get("companyId", agent.get("company_id", ""))
         agent_jwt = _create_agent_jwt(agent_id, company_id)
 
+        agent_outline_key = None
+        try:
+            agent_outline_key = ensure_outline_user(name, agent_id, DATABASE_URL)
+        except Exception:
+            logger.error("Failed to provision Outline user for %s", name)
+
         config = generate_profile_config(
             agent_id=agent_id,
             company_id=company_id,
@@ -320,6 +327,7 @@ class Orchestrator:
             telegram_clarify_timeout=agent_telegram.get("defaultTimeout", 600) if enable_telegram else None,
             agent_name=name,
             paperclip_api_key=agent_jwt,
+            outline_api_key=agent_outline_key,
         )
 
         config_path = profile_dir / "config.yaml"
