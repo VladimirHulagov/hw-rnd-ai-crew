@@ -98,6 +98,8 @@ def _patch_installed_agent():
             _patched.append("clarify_bridge.py")
 
 
+
+
 def _ensure_profiles_root():
     profiles_dir = HERMES_HOME_DEFAULT / "profiles"
     profiles_dir.mkdir(parents=True, exist_ok=True)
@@ -216,6 +218,8 @@ def _build_soul_md(role: str, name: str) -> str:
         "- Для поиска и чтения документов Outline используй `search_outline` (rag-mcp) — он возвращает компактные Markdown-фрагменты.\n"
         "- Для создания и обновления документов используй `mcp_outline_*` (Outline MCP).\n"
         "- НЕ читай полные документы через `mcp_outline_*` — это вызывает context overflow из-за ProseMirror JSON.\n"
+        "- `documents.create` возвращает ProseMirror + Markdown. Для чтения созданного документа всегда используй `documents.info` — он возвращает чистый Markdown.\n"
+        "- Перед созданием документа — всегда поиск (`mcp_outline_search`), чтобы избежать дубликатов.\n"
     )
     if role in ("ceo", "cto"):
         return (
@@ -379,7 +383,7 @@ class Orchestrator:
             f"[program:{proc_name}]\n"
             f"command={command}\n"
             f"directory=/\n"
-            f"environment=HERMES_HOME=\"{profile_dir}\",PAPERCLIP_RUN_API_KEY=\"{agent_jwt}\",TELEGRAM_BOT_TOKEN=\"{agent_telegram.get('botToken', '') if enable_telegram else ''}\",TELEGRAM_CHAT_ID=\"{agent_telegram.get('chatId', '') if enable_telegram else ''}\",TELEGRAM_CLARIFY_TIMEOUT=\"{agent_telegram.get('defaultTimeout', 600) if enable_telegram else '600'}\",TELEGRAM_ALLOWED_USERS=\"{agent_telegram.get('allowedUsers', '') if enable_telegram else ''}\",TELEGRAM_REQUIRE_MENTION=\"true\"\n"
+            f"environment=HERMES_HOME=\"{profile_dir}\",PAPERCLIP_RUN_API_KEY=\"{agent_jwt}\",TELEGRAM_BOT_TOKEN=\"{agent_telegram.get('botToken', '') if enable_telegram else ''}\",TELEGRAM_CHAT_ID=\"{agent_telegram.get('chatId', '') if enable_telegram else ''}\",TELEGRAM_HOME_CHANNEL=\"{agent_telegram.get('chatId', '') if enable_telegram else ''}\",TELEGRAM_CLARIFY_TIMEOUT=\"{agent_telegram.get('defaultTimeout', 600) if enable_telegram else '600'}\",TELEGRAM_ALLOWED_USERS=\"{agent_telegram.get('allowedUsers', '') if enable_telegram else ''}\",TELEGRAM_REQUIRE_MENTION=\"true\"\n"
             f"autostart=true\n"
             f"autorestart=true\n"
             f"stdout_logfile=/dev/fd/1\n"
@@ -437,6 +441,11 @@ class Orchestrator:
             if agent_id not in current_ids:
                 await self.deprovision_agent(agent_id)
                 del self._known_agents[agent_id]
+
+        for agent_id in list(self.port_manager.get_all()):
+            if agent_id not in current_ids:
+                self.port_manager.deallocate(agent_id)
+                logger.info("Cleaned up stale port for agent %s", agent_id[:8])
 
         _write_ports_json(self.port_manager.get_all())
 

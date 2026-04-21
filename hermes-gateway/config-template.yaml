@@ -32,6 +32,7 @@ memory:
   memory_enabled: true
   user_profile_enabled: true
   nudge_interval: 10
+  memory_char_limit: 8000
 approvals:
   mode: off
   timeout: 60
