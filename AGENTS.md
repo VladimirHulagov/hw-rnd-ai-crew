@@ -43,6 +43,7 @@ HW RND AI Crew is a Docker Compose stack providing RAG over Nextcloud files, Pap
 - Инструкции агентам: в `_build_soul_md()` (`orchestrator.py`)
 - Агенты используют `mcp_outline_*` tools для поиска и создания/обновления документов
 - Перед созданием документа — всегда поиск (`mcp_outline_search`), чтобы избежать дубликатов
+- `documents.create` возвращает ProseMirror + Markdown. Для чтения созданного документа всегда используй `documents.info` — он возвращает чистый Markdown
 
 ### Outline RAG (search)
 
@@ -205,6 +206,14 @@ Hermes gateway может держать старый JWT после того к
 
 ## Discoveries
 
+### Platform bugs (confirmed, not fixable from our side)
+
+| # | Bug | Workaround |
+|---|-----|------------|
+| 1 | `list_issues(assigneeAgentId="me")` → HTTP 500 | Передавать свой UUID явно (из `paperclip_get_current_agent`) или фильтровать по статусу |
+| 2 | `release_issue()` сбрасывает статус в «todo» и снимает исполнителя | Использовать `update_issue` вместо `release_issue`, если нужно сохранить статус и assignee |
+| 3 | `read_file` «File unchanged since last read» при повторном чтении cache-файлов | Использовать `terminal cat` вместо `read_file` |
+
 ### Roles system
 - `assignedRole` must be in `createAgentSchema` (Zod validator) or `validate()` strips it from `req.body` silently
 - `resolveRoleKey()` must check UUID format before querying UUID column — otherwise PostgresError on string keys like `agency-agents/marketing/foo`
@@ -225,3 +234,24 @@ Hermes gateway может держать старый JWT после того к
 ### Hermes adapter config
 - `buildSchemaAdapterConfig()` does NOT include `promptTemplate` — it's adapter-agnostic and handled server-side
 - Backend fills `promptTemplate` from role markdown when `assignedRole` is provided and `promptTemplate` is empty
+
+### release_issue() fixed (was resetting status/assignee)
+- `release()` in `paperclip/server/src/services/issues.ts` now only clears `checkoutRunId` — preserves `status` and `assigneeAgentId`
+- "Release" means "release the write lock", not "abandon the issue"
+- To change status or reassign, agents should use `update_issue` explicitly
+
+### list_issues assigneeAgentId=me fixed
+- Server route now resolves `assigneeAgentId=me` to `req.actor.agentId` for agent actors (like userId filters)
+- MCP tool returns explicit error if agent ID is not available after "me" resolution
+
+### rag-mcp response serialization fixed
+- `rag-mcp/mcp_server/main.py` now uses `json.dumps(result, ensure_ascii=False, default=str)` instead of `str(result)`
+- Was producing Python repr (single quotes, None, True/False) inside JSON wrapper — broke agent-side parsing
+
+### Outline NDJSON response handling
+- `rag-worker/rag/outline.py` — `_parse_json_response()` handles both regular JSON and NDJSON (objects separated by newline)
+- Falls back to line-by-line parsing when `resp.json()` fails
+
+### Paperclip 409 conflict handling
+- `paperclip-mcp/paperclip-mcp-backup/mcp_server/tools.py` — `_request()` returns structured 409 error with `hint` field
+- Hint tells agents to save work to Outline/disk and ask CEO to update manually
