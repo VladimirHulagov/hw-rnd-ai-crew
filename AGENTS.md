@@ -255,3 +255,31 @@ Hermes gateway может держать старый JWT после того к
 ### Paperclip 409 conflict handling
 - `paperclip-mcp/paperclip-mcp-backup/mcp_server/tools.py` — `_request()` returns structured 409 error with `hint` field
 - Hint tells agents to save work to Outline/disk and ask CEO to update manually
+
+### Agent prompt loading priority (IMPORTANT)
+- Adapter `execute.ts` has `DEFAULT_PROMPT_TEMPLATE` hardcoded, but `loadPromptTemplate()` checks `/paperclip/prompt-template.md` FIRST
+- **`/paperclip/prompt-template.md` overrides the JS default** — always edit the file on disk, not just the JS source
+- After editing `execute.ts` source → rebuild adapter (`esbuild` in container) → restart paperclip-server
+- After editing `/paperclip/prompt-template.md` → just restart paperclip-server (no rebuild needed)
+
+### Text-only responses and run termination (glm-5.1)
+- glm-5.1 периодически отвечает текстом без tool_calls. Это **нормальное поведение модели**, не баг.
+- В `run_agent.py` (~line 8653): `else: final_response = ...; break` — run завершается на text-only.
+- **Попытка убрать break приводит к бесконечному текстовому циклу** — модель пишет "теперь сделаю X" без tool call, continue, снова пишет, до max_iterations.
+- Правильное решение: text-only = break. Модель должна публиковать результаты через `paperclip_create_comment` перед тем как "закончить".
+- PROGRESS.md — единственная связь между runs. Без обновления PROGRESS.md каждый run начинает с нуля.
+
+### Agent instruction files (container volume)
+- Путь: `/paperclip/instances/default/companies/<companyId>/agents/<agentId>/instructions/`
+- Файлы: `AGENTS.md` (role-specific), `SOUL.md` (persona), `HEARTBEAT.md` (optional, merged into adapter prompt)
+- Оркестратор читает эти файлы и синкает в hermes profile при provisioning
+- Изменения в UI `/agents/<slug>/instructions` → пишутся в этот volume → подхватываются при следующем sync
+
+### Session indexer bug
+- `session_indexer.py` каждые 10 мин: `ERROR: Index cycle failed: cannot access local variable 'failed_sources' where it is not associated with a value`
+- Индексер продолжает работать (ошибка в logging/telemetry, не в индексации), но логи засираются
+
+### MCP memory server connection issue
+- `Failed to connect to MCP server 'memory': Illegal header value b'[REDACTED]'`
+- Memory MCP server на порту 8680 запускается корректно, но gateway не может подключиться
+- Возможная причина: невалидный символ в `MEMORY_API_KEY` или problem с StreamableHTTP transport
