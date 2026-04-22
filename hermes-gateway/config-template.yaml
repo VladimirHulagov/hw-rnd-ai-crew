@@ -1,6 +1,9 @@
 model:
   default: ${model}
   provider: ${provider}
+agent:
+  tool_use_enforcement: true
+  max_turns: 30
 terminal:
   backend: local
   cwd: .
