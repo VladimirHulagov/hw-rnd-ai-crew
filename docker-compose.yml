@@ -167,6 +167,7 @@ services:
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      PAPERCLIP_ALLOWED_ATTACHMENT_TYPES: "*"
     volumes:
       - paperclip_data:/paperclip
       - /mnt/services/gladiator/agents:/mnt/services/gladiator/agents

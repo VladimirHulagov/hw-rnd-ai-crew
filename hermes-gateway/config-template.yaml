@@ -2,8 +2,9 @@ model:
   default: ${model}
   provider: ${provider}
 agent:
-  tool_use_enforcement: true
-  max_turns: 30
+  tool_use_enforcement: auto
+  max_turns: 90
+  reasoning_effort: "none"
 terminal:
   backend: local
   cwd: .
@@ -53,9 +54,10 @@ mcp_servers:
   paperclip:
     url: http://paperclip-mcp:8082/mcp
     headers:
-      X-Paperclip-Api-Key: "${PAPERCLIP_RUN_API_KEY}"
+      X-Paperclip-Api-Key: "$paperclip_api_key"
       X-Paperclip-Company-Id: "${company_id}"
       X-Paperclip-Agent-Id: "${agent_id}"
+      X-Paperclip-Run-ID: "${PAPERCLIP_HEARTBEAT_RUN_ID}"
     enabled: true
     timeout: 60
     connect_timeout: 30
@@ -73,7 +75,7 @@ mcp_servers:
     enabled: true
     timeout: 30
     connect_timeout: 10
-_config_version: 7
+_config_version: 8
 security:
   redact_secrets: true
   tirith_enabled: false

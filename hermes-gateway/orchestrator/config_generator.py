@@ -45,6 +45,7 @@ def generate_profile_config(
         "memory_api_key": os.environ.get("MEMORY_API_KEY", ""),
         "MCP_RAG_URL": os.environ.get("MCP_RAG_URL", ""),
         "MCP_OUTLINE_URL": os.environ.get("MCP_OUTLINE_URL", ""),
+        "PAPERCLIP_RUN_API_KEY": paperclip_api_key,
         "paperclip_api_key": paperclip_api_key,
     }
 
