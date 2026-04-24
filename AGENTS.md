@@ -25,14 +25,18 @@ HW RND AI Crew is a Docker Compose stack providing RAG over Nextcloud files, Pap
 - Hot-reload: hash fingerprint (config-template.yaml + orchestrator.py + config_generator.py) — при изменении исходников оркестратор перезапускает агентов автоматически
 - **Инструкции агентов**: источник истины — Paperclip UI (`/agents/<slug>/instructions`), managed bundle на диске paperclip-server. Оркестратор монтирует `paperclip_data` (ro) и при provisioning'е читает `<instanceRoot>/companies/<companyId>/agents/<agentId>/instructions/AGENTS.md` → пишет в `SOUL.md` профиля hermes. Fallback — минимальная заглушка из `_build_soul_md()`.
 
-### JWT Auth flow
+### Agent Auth flow (permanent API keys)
 
 1. Paperclip heartbeat service создаёт `heartbeat_run` в БД (реальный UUID)
-2. Paperclip генерирует JWT через `createLocalAgentJwt()` с `run_id = heartbeat_run.id`
-3. JWT передаётся в адаптер как `ctx.authToken`
-4. Адаптер прокидывает JWT в `POST /v1/runs` как `paperclip_api_key`
-5. Gateway `api_server.py` обновляет `os.environ["PAPERCLIP_RUN_API_KEY"]` и **пересоздаёт** MCP-подключение paperclip (отключает старое, при создании агента MCP подключается с новым JWT)
-6. MCP tools используют JWT в заголовке `X-Paperclip-Api-Key`
+2. Оркестратор загружает постоянные `pcp_*` API ключи из `agent_api_keys.json` и прописывает в supervisor config как `PAPERCLIP_RUN_API_KEY`
+3. Адаптер получает `ctx.runId` (heartbeat run UUID) и `ctx.authToken` (JWT) от Paperclip
+4. Адаптер отправляет `POST /v1/runs` с `heartbeat_run_id: ctx.runId` и `paperclip_api_key: ctx.authToken`
+5. Gateway `api_server.py` проверяет: если `PAPERCLIP_RUN_API_KEY` уже `pcp_*` — не перезаписывает. Устанавливает `PAPERCLIP_HEARTBEAT_RUN_ID` из `heartbeat_run_id` body
+6. MCP paperclip переподключается: `${PAPERCLIP_RUN_API_KEY}` → permanent key, `${PAPERCLIP_HEARTBEAT_RUN_ID}` → heartbeat UUID
+7. paperclip-mcp получает `X-Paperclip-Api-Key: pcp_*` + `X-Paperclip-Run-ID: <uuid>` и прокидывает в paperclip-server
+8. paperclip-server авторизует через `pcp_*` key (идентифицирует агента), опциональный `X-Paperclip-Run-ID` для FK linking
+
+**Преимущество:** постоянные ключи НЕ истекают, нет 401 "Agent run id required" при удалённых heartbeat_runs
 
 ### Outline MCP (knowledge base)
 
@@ -103,6 +107,19 @@ Hermes gateway может держать старый JWT после того к
 - Коллекция Qdrant `agent_memory`: 768d cosine, payload indexes на `agent_name` (keyword), `source` (keyword)
 - Профили агентов персистятся через Docker volume `hermes_profiles` → `/root/.hermes/profiles`
 - Конфигурация: `memory` mcp_server в `config-template.yaml` / `config.yaml`, переменные `OLLAMA_BASE_URL`, `QDRANT_URL`, `EMBED_MODEL`, `MEMORY_API_KEY`
+
+### Issue Checklist
+
+Нативный чеклист задач — замена PROGRESS.md, персистентный в БД Paperclip.
+
+- **DB**: `checklist` jsonb column на `issues` table (migration 0052), тип `IssueChecklistItem[]` = `{ text: string, done: boolean }`
+- **MCP tool**: `paperclip_set_checklist` в paperclip-mcp — полная замена чеклиста (agent отправляет весь массив)
+- **UI**: read-only рендер в `IssueProperties.tsx` — CheckSquare/Square иконки, прогресс done/total, line-through для done
+- **Валидация**: max 20 items, text max 200 chars (Zod schema в shared)
+- Панель "Properties" переименована в "Details"
+- Агенты используют чеклист вместо PROGRESS.md — инструкции обновлены в AGENTS.md (Paperclip instructions volume) и `prompt-template.md`
+- **paperclip-mcp deployment**: контейнер не bind-mounted — нужен `docker cp` файлов + `docker restart paperclip-mcp` для деплоя изменений
+- **MCP tool naming**: hermes-agent добавляет двойной префикс `mcp_paperclip_` → tools называются `mcp_paperclip_paperclip_list_issues`. Инструкции агентам должны использовать полный префикс `mcp_paperclip_`
 
 ## Discoveries
 
@@ -187,6 +204,12 @@ Hermes gateway может держать старый JWT после того к
 - `hermes-paperclip-adapter/dist/server/execute.js` — bind-mounted (ro) в paperclip-server
 - Build: esbuild в контейнере paperclip-server (нет node на хосте)
 
+### Paperclip MCP (submodule):
+- `paperclip-mcp/paperclip-mcp-backup/mcp_server/tools.py` — MCP tool implementations (`set_checklist`, `list_issues`, etc.)
+- `paperclip-mcp/paperclip-mcp-backup/mcp_server/main.py` — MCP tool registration, dispatch, StreamableHTTP transport
+- Deployment: `docker cp` files → `docker restart paperclip-mcp` (container not bind-mounted)
+- 23 tools registered including `paperclip_set_checklist`
+
 ### Paperclip UI (modified):
 - `paperclip/ui/src/pages/Costs.tsx` — dual-metric budget cards
 - `paperclip/ui/src/pages/AgentDetail.tsx` — budget cards, transcript hiddenTypes/toggle
@@ -195,6 +218,8 @@ Hermes gateway может держать старый JWT после того к
 - `paperclip/ui/src/hooks/useTimeSettings.ts` — timezone, timeFormat hooks
 - `paperclip/ui/src/components/CommentThread.tsx` — использует `useTimeSettings()` для 24h/12h
 - `paperclip/ui/src/components/transcript/RunTranscriptView.tsx` — timestamps, Brain icon, filters
+- `paperclip/ui/src/components/IssueProperties.tsx` — checklist rendering (CheckSquare/Square, progress)
+- `paperclip/ui/src/components/PropertiesPanel.tsx` — "Details" panel title
 
 ### Paperclip Server (modified):
 - `paperclip/server/src/services/budgets.ts` — `migratePoliciesMetric` деактивирует вместо DELETE
@@ -203,6 +228,12 @@ Hermes gateway может держать старый JWT после того к
 ### Shared package (modified):
 - `paperclip/packages/shared/src/types/instance.ts` — TimeFormat type, timezone/timeFormat fields
 - `paperclip/packages/shared/src/validators/instance.ts` — timezone/timeFormat zod schemas
+- `paperclip/packages/shared/src/types/issue.ts` — IssueChecklistItem type, checklist field
+- `paperclip/packages/shared/src/validators/issue.ts` — issueChecklistItemSchema, issueChecklistSchema
+
+### DB (modified):
+- `paperclip/packages/db/src/schema/issues.ts` — checklist jsonb column
+- `paperclip/packages/db/src/migrations/0052_issue_checklist.sql` — ALTER TABLE migration
 
 ## Discoveries
 
@@ -210,8 +241,8 @@ Hermes gateway может держать старый JWT после того к
 
 | # | Bug | Workaround |
 |---|-----|------------|
-| 1 | `list_issues(assigneeAgentId="me")` → HTTP 500 | Передавать свой UUID явно (из `paperclip_get_current_agent`) или фильтровать по статусу |
-| 2 | `release_issue()` сбрасывает статус в «todo» и снимает исполнителя | Использовать `update_issue` вместо `release_issue`, если нужно сохранить статус и assignee |
+| 1 | `list_issues(assigneeAgentId="me")` → HTTP 500 | **FIXED** — server route now resolves `me` to agent UUID |
+| 2 | `release_issue()` сбрасывает статус в «todo» и снимает исполнителя | **FIXED** — `release()` now only clears `checkoutRunId` |
 | 3 | `read_file` «File unchanged since last read» при повторном чтении cache-файлов | Использовать `terminal cat` вместо `read_file` |
 
 ### Roles system
@@ -225,6 +256,9 @@ Hermes gateway может держать старый JWT после того к
 ### ServiceWorker cache
 - `sw.js` uses `CACHE_NAME` version string — must bump on every UI deploy or browser serves stale assets
 - Firefox caches aggressively — even Ctrl+Shift+R insufficient. Must bump `CACHE_NAME` and deploy updated `sw.js`
+- Ядерный вариант: добавить `Clear-Site-Data: "cache"` заголовок к `index.html` через Express middleware ПЕРЕД `express.static()` — заставляет браузер очистить весь кеш
+- Middleware патчится в `/app/server/dist/app.js` (в контейнере) — не переживает `docker compose up -d --build`
+- После подтверждения что кеш сброшен — убрать заголовок (он отключает оффлайн-кеш полностью)
 
 ### Context compression
 - Hermes config `compression.threshold` controls when context auto-compresses (fraction of model context length)
@@ -248,6 +282,18 @@ Hermes gateway может держать старый JWT после того к
 - `rag-mcp/mcp_server/main.py` now uses `json.dumps(result, ensure_ascii=False, default=str)` instead of `str(result)`
 - Was producing Python repr (single quotes, None, True/False) inside JSON wrapper — broke agent-side parsing
 
+### MCP tool naming (IMPORTANT)
+- Hermes-agent добавляет двойной префикс `mcp_<server>_` к tool names из MCP servers
+- Paperclip MCP tools: `paperclip_list_issues` → `mcp_paperclip_paperclip_list_issues` в агенте
+- Агенты (glm-5.1) НЕ понимают маппинг `paperclip_*` → `mcp_paperclip_paperclip_*` — инструкции должны использовать полные имена `mcp_paperclip_paperclip_*`
+- Инструкции в SOUL.md и prompt-template.md должны явно указывать префикс `mcp_paperclip_`
+
+### paperclip-mcp deployment
+- Контейнер `paperclip-mcp` НЕ bind-mounted — submodule файлы нужно копировать явно
+- Deploy: `docker cp paperclip-mcp/paperclip-mcp-backup/mcp_server/tools.py paperclip-mcp:/app/mcp_server/tools.py` + same for `main.py` + `docker restart paperclip-mcp`
+- MCP StreamableHTTP требует `Accept: application/json, text/event-stream` заголовок — без него 406
+- MCP protocol требует initialize handshake перед `tools/list` — иначе `WARNING:root:Failed to validate request`
+
 ### Outline NDJSON response handling
 - `rag-worker/rag/outline.py` — `_parse_json_response()` handles both regular JSON and NDJSON (objects separated by newline)
 - Falls back to line-by-line parsing when `resp.json()` fails
@@ -262,18 +308,60 @@ Hermes gateway может держать старый JWT после того к
 - After editing `execute.ts` source → rebuild adapter (`esbuild` in container) → restart paperclip-server
 - After editing `/paperclip/prompt-template.md` → just restart paperclip-server (no rebuild needed)
 
-### Text-only responses and run termination (glm-5.1)
-- glm-5.1 периодически отвечает текстом без tool_calls. Это **нормальное поведение модели**, не баг.
-- В `run_agent.py` (~line 8653): `else: final_response = ...; break` — run завершается на text-only.
-- **Попытка убрать break приводит к бесконечному текстовому циклу** — модель пишет "теперь сделаю X" без tool call, continue, снова пишет, до max_iterations.
-- Правильное решение: text-only = break. Модель должна публиковать результаты через `paperclip_create_comment` перед тем как "закончить".
-- PROGRESS.md — единственная связь между runs. Без обновления PROGRESS.md каждый run начинает с нуля.
+### Text-only responses and run termination (glm-5.1) — FIXED
+
+**Симптом:** glm-5.1 отвечает текстом без tool_calls. Run "succeeds" с `resultJson` содержащим обещание ("Загружу в Outline", "Создам документ") вместо результата.
+
+**Root cause analysis:**
+
+1. **Начало run — МИНИМАЛЬНЫЙ user message** (FIXED). Адаптер отправлял `input: "Work on the assigned task"` (25 chars). Рабочий hermes-agent использует детальные cron prompt'ы (1.9K+ chars) как user message. Модели приоритизируют user message над system prompt. Fix: `buildInputMessage()` в adapter — формирует task-specific user message ~400 chars с `[HEARTBEAT RUN]` префиксом.
+
+2. **Конец run — text-only termination без retry** (FIXED). Когда модель отвечает текстом без tool_calls, `run_agent.py` делает `break` без проверки. Fix: promise detection (`_has_russian_promise`/`_has_english_promise`) — если ответ похож на обещание, inject continuation prompt и `continue` loop (до 2 раз).
+
+**Сравнение с рабочим hermes-agent (`/mnt/services/hermes-agent/`):**
+
+| Aspect | Working | Ours (before fix) | Ours (after fix) |
+|--------|---------|-------------------|-------------------|
+| System prompt | "You are Hermes Agent..." (14.9K) | SOUL.md persona (7.5K) | Same |
+| Tools | **222** (browser, delegation, etc.) | **69** | Same |
+| User message | Cron prompt (1.9K+ chars) | `"Work on the assigned task"` (25 chars) | `[HEARTBEAT RUN]...` (~400 chars) |
+| `tool_use_enforcement` | `auto` | `true` | Same |
+| Text-only retry | N/A (model doesn't text-only) | None | Promise detection + continuation |
+| `compression.threshold` | 0.6 | 0.85 | Same |
+
+**Патчи в `hermes-agent/run_agent.py`:**
+- `_text_only_continuations` counter (init at line ~7041)
+- Promise detection functions (`_has_russian_promise`, `_has_english_promise`)
+- Forced continuation loop (up to 2 retries) before `break`
+
+**Патчи в `hermes-paperclip-adapter/src/server/execute.ts`:**
+- `buildInputMessage()` — task-specific user message
+- Используется как `input` в POST /v1/runs
+
+**Дампы API запросов (HERMES_DUMP_REQUESTS=1):**
+- Env var добавлен в supervisor config для каждого gateway процесса
+- Дампы сохраняются в `<profile>/sessions/request_dump_<session_id>_<timestamp>.json`
+- Формат: `{timestamp, session_id, reason, request: {method, url, headers, body}}`
+- Reason: `preflight` (перед каждым API вызовом), `non_retryable_client_error`, `max_retries_exhausted`
+- 41 последовательный text-only run с 08:26 до 13:52 (все `msgs=2`, `user="Work on the assigned task"`)
+- После fix: 24 API calls за один run, agent выполнял реальную работу
+
+**Критичный баг с патчами:** `_patch_installed_agent()` в orchestrator копирует из `hermes-agent/` submodule → site-packages. Патчи site-packages переживают supervisor restart, но **НЕ** переживают `docker compose up -d --build` (image rebuild). Патчи нужно сохранять в submodule (`hermes-agent/run_agent.py`, `hermes-agent/gateway/platforms/api_server.py`). Также: `gateway.platforms.api_server` в site-packages — **отдельный файл** от `/opt/hermes-agent-build/gateway/platforms/api_server.py`; нужно копировать явно: `docker exec hermes-gateway cp /opt/hermes-agent-build/gateway/platforms/api_server.py /usr/local/lib/python3.11/site-packages/gateway/platforms/api_server.py`
+
+**Код path для Paperclip heartbeat:** adapter → `POST /v1/runs` → `api_server.py` → `AIAgent.run_conversation()` (в site-packages `run_agent.py`). Telegram gateway использует `gateway/run.py` → `GatewayRunner` (другой код path, кеширование AIAgent, etc).
+
+**Контекст между runs:** `paperclip_set_checklist` (чеклист задачи, персистентный в БД) + файлы на диске. PROGRESS.md больше не используется — заменён на нативный чеклист.
 
 ### Agent instruction files (container volume)
 - Путь: `/paperclip/instances/default/companies/<companyId>/agents/<agentId>/instructions/`
 - Файлы: `AGENTS.md` (role-specific), `SOUL.md` (persona), `HEARTBEAT.md` (optional, merged into adapter prompt)
 - Оркестратор читает эти файлы и синкает в hermes profile при provisioning
 - Изменения в UI `/agents/<slug>/instructions` → пишутся в этот volume → подхватываются при следующем sync
+
+### Config: reasoning_effort
+- `agent.reasoning_effort: "none"` в `config-template.yaml` — загружается через `_load_reasoning_config()` в `gateway/run.py`
+- api_server.py патчен для передачи `reasoning_config` в AIAgent: `from gateway.run import GatewayRunner as _GR; _reasoning_config = _GR._load_reasoning_config()`
+- Патч api_server.py нужно копировать явно: `cp /opt/hermes-agent-build/gateway/platforms/api_server.py /usr/local/lib/python3.11/site-packages/gateway/platforms/api_server.py`
 
 ### Session indexer bug
 - `session_indexer.py` каждые 10 мин: `ERROR: Index cycle failed: cannot access local variable 'failed_sources' where it is not associated with a value`
@@ -283,3 +371,30 @@ Hermes gateway может держать старый JWT после того к
 - `Failed to connect to MCP server 'memory': Illegal header value b'[REDACTED]'`
 - Memory MCP server на порту 8680 запускается корректно, но gateway не может подключиться
 - Возможная причина: невалидный символ в `MEMORY_API_KEY` или problem с StreamableHTTP transport
+
+### Supervisor config reload (CRITICAL)
+
+- **`supervisorctl restart` НЕ перечитывает config** — только убивает/запускает процесс со старым конфигом
+- Для применения нового config: `supervisorctl reread && supervisorctl update <process_name>`
+- Или: `docker exec hermes-gateway supervisorctl reread && docker exec hermes-gateway supervisorctl update`
+- После изменений в orchestrator (`agent_api_keys.json`, `config_generator.py`) — ALWAYS reread+update, не просто restart
+- Проверить env var процесса: `cat /proc/<PID>/environ | tr '\0' '\n' | grep PAPERCLIP`
+
+### Paperclip MCP tools disappearing (исправлено)
+
+**Симптом:** Агент теряет paperclip MCP tools (44t/0pc вместо 71t/27pc) после первого heartbeat run. Outline/rag/memory tools стабильны.
+
+**Root cause (двойной):**
+1. `supervisorctl restart` не перенидывал config → процесс стартовал с JWT вместо `pcp_*` permanent key → JWT протухал между runs → MCP reconnect с протухшим JWT → paperclip-mcp отклонял → tools=0
+2. `MCPServerTask._run_http()` держит StreamableHTTP connection. При idle (>5 мин) httpx timeout рвёт соединение. `run()` пытается reconnect, но после 5 неудачных попыток сдаётся. `_servers["paperclip"]` остаётся с `session=None`, а `discover_mcp_tools()` skip'ает (т.к. paperclip уже в `_servers`)
+
+**Фикс:**
+- `supervisorctl reread && supervisorctl update` для применения permanent keys
+- `api_server.py`: evict paperclip из `_servers` если `session is None` — позволяет `discover_mcp_tools()` переподключить
+- `_has_permanent_key` guard: если env var уже `pcp_*` — не перезаписывать JWT от adapter'а
+
+### JWT staleness → 401 "Agent run id required" (исправлено)
+
+**Решение:** Постоянные `pcp_*` API ключи вместо per-run JWT. Ключи хранятся в `agent_api_keys.json` и прописываются в supervisor config как `PAPERCLIP_RUN_API_KEY`. Gateway `api_server.py` не перезаписывает их JWT. `X-Paperclip-Run-ID` header передаётся отдельно через `${PAPERCLIP_HEARTBEAT_RUN_ID}` env var для опционального FK linking.
+
+**Оставшийся edge case:** `X-Paperclip-Run-ID` может ссылаться на удалённый heartbeat_run. `actorMiddleware` в auth.ts очищает `runId` в `undefined` — запрос выполняется без FK linking (без ошибки 401).

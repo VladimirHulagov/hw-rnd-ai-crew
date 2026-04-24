@@ -25,6 +25,15 @@ from port_manager import PortManager
 from outline_user import ensure_outline_user
 from supervisor_client import SupervisorClient
 
+
+_AGENT_API_KEYS_PATH = Path(__file__).parent / "agent_api_keys.json"
+
+
+def _load_agent_api_keys() -> dict[str, str]:
+    if _AGENT_API_KEYS_PATH.exists():
+        return json.loads(_AGENT_API_KEYS_PATH.read_text())
+    return {}
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -257,6 +266,7 @@ class Orchestrator:
         self._running_agent_ids: set[str] = set()
         self._known_agents: dict[str, dict] = {}
         self._source_fingerprint: str | None = None
+        self._instructions_hashes: dict[str, dict] = {}
 
     def _profile_dir(self, agent_id: str) -> Path:
         return self.profiles_root / agent_id
@@ -278,11 +288,44 @@ class Orchestrator:
         stored = self._known_agents.get(agent_id)
         if not stored:
             return True
-        return (
+        data_changed = (
             stored.get("role") != agent.get("role")
             or stored.get("name") != agent.get("name")
             or stored.get("adapter_config") != agent.get("adapter_config")
         )
+        if data_changed:
+            return True
+        instructions_changed = self._instructions_changed(agent_id, agent)
+        if instructions_changed:
+            logger.info("Instructions changed for agent %s, triggering restart", agent_id[:8])
+            return True
+        return False
+
+    def _instructions_changed(self, agent_id: str, agent: dict) -> bool:
+        company_id = agent.get("companyId", "")
+        if not company_id:
+            return False
+        instructions_dir = (
+            Path(PAPERCLIP_DATA_PATH)
+            / "instances" / PAPERCLIP_INSTANCE_ID
+            / "companies" / company_id
+            / "agents" / agent_id
+            / "instructions"
+        )
+        if not instructions_dir.is_dir():
+            return False
+        current_hashes = {}
+        for f in sorted(instructions_dir.glob("*.md")):
+            current_hashes[f.name] = hash(f.read_text())
+        stored_key = f"_instr_{agent_id}"
+        prev = getattr(self, '_instructions_hashes', {}).get(stored_key)
+        if prev is None:
+            getattr(self, '_instructions_hashes', {})[stored_key] = current_hashes
+            return False
+        if prev != current_hashes:
+            getattr(self, '_instructions_hashes', {})[stored_key] = current_hashes
+            return True
+        return False
 
     async def _restart_agent(self, agent_id: str, agent: dict):
         proc_name = self._gateway_name(agent_id)
@@ -312,7 +355,8 @@ class Orchestrator:
 
         name = agent.get("name", "Agent")
         company_id = agent.get("companyId", agent.get("company_id", ""))
-        agent_jwt = _create_agent_jwt(agent_id, company_id)
+        agent_api_keys = _load_agent_api_keys()
+        agent_key = agent_api_keys.get(agent_id, _create_agent_jwt(agent_id, company_id))
 
         agent_outline_key = None
         try:
@@ -329,7 +373,7 @@ class Orchestrator:
             telegram_allowed_users=agent_telegram.get("allowedUsers") if enable_telegram else None,
             telegram_clarify_timeout=agent_telegram.get("defaultTimeout", 600) if enable_telegram else None,
             agent_name=name,
-            paperclip_api_key=agent_jwt,
+            paperclip_api_key=agent_key,
             outline_api_key=agent_outline_key,
         )
 
@@ -383,7 +427,7 @@ class Orchestrator:
             f"[program:{proc_name}]\n"
             f"command={command}\n"
             f"directory=/\n"
-            f"environment=HERMES_HOME=\"{profile_dir}\",PAPERCLIP_RUN_API_KEY=\"{agent_jwt}\",TELEGRAM_BOT_TOKEN=\"{agent_telegram.get('botToken', '') if enable_telegram else ''}\",TELEGRAM_CHAT_ID=\"{agent_telegram.get('chatId', '') if enable_telegram else ''}\",TELEGRAM_HOME_CHANNEL=\"{agent_telegram.get('chatId', '') if enable_telegram else ''}\",TELEGRAM_CLARIFY_TIMEOUT=\"{agent_telegram.get('defaultTimeout', 600) if enable_telegram else '600'}\",TELEGRAM_ALLOWED_USERS=\"{agent_telegram.get('allowedUsers', '') if enable_telegram else ''}\",TELEGRAM_REQUIRE_MENTION=\"true\"\n"
+            f"environment=HERMES_HOME=\"{profile_dir}\",PAPERCLIP_RUN_API_KEY=\"{agent_key}\",TELEGRAM_BOT_TOKEN=\"{agent_telegram.get('botToken', '') if enable_telegram else ''}\",TELEGRAM_CHAT_ID=\"{agent_telegram.get('chatId', '') if enable_telegram else ''}\",TELEGRAM_HOME_CHANNEL=\"{agent_telegram.get('chatId', '') if enable_telegram else ''}\",TELEGRAM_CLARIFY_TIMEOUT=\"{agent_telegram.get('defaultTimeout', 600) if enable_telegram else '600'}\",TELEGRAM_ALLOWED_USERS=\"{agent_telegram.get('allowedUsers', '') if enable_telegram else ''}\",TELEGRAM_REQUIRE_MENTION=\"true\"\n"
             f"autostart=true\n"
             f"autorestart=true\n"
             f"stdout_logfile=/dev/fd/1\n"
