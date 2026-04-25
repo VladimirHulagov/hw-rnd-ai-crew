@@ -110,6 +110,9 @@ def _scan_skills() -> list[dict]:
                     mtime = datetime.fromtimestamp(
                         skill_md.stat().st_mtime, tz=timezone.utc
                     )
+                    ctime = datetime.fromtimestamp(
+                        skill_md.stat().st_ctime, tz=timezone.utc
+                    )
                 except Exception:
                     continue
                 skills.append(
@@ -123,6 +126,7 @@ def _scan_skills() -> list[dict]:
                         "tags": meta.get("tags", []),
                         "version": meta.get("version", ""),
                         "fileCount": _count_files(skill_dir),
+                        "createdAt": ctime.isoformat(),
                         "modifiedAt": mtime.isoformat(),
                     }
                 )
@@ -157,13 +161,21 @@ async def get_skill(agent_id: str, category: str, skill_name: str, _=Depends(_ch
     skill_md = d / "SKILL.md"
     try:
         markdown = skill_md.read_text(encoding="utf-8")
+        ctime = datetime.fromtimestamp(skill_md.stat().st_ctime, tz=timezone.utc)
+        mtime = datetime.fromtimestamp(skill_md.stat().st_mtime, tz=timezone.utc)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Cannot read SKILL.md: {e}")
+    meta = _parse_frontmatter(markdown)
     return {
         "agentId": agent_id,
         "agentName": _get_agent_name(agent_id) or agent_id[:8],
         "category": category,
         "skillName": skill_name,
+        "description": meta.get("description", ""),
+        "tags": meta.get("tags", []),
+        "version": meta.get("version", ""),
+        "createdAt": ctime.isoformat(),
+        "modifiedAt": mtime.isoformat(),
         "markdown": markdown,
         "files": _list_files(d),
     }
