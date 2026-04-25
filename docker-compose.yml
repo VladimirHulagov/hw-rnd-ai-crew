@@ -116,6 +116,7 @@ services:
       OUTLINE_URL: "${OUTLINE_URL:-}"
       OUTLINE_API_KEY: "${OUTLINE_API_KEY:-}"
       OUTLINE_DB_URL: "${OUTLINE_DB_URL:-}"
+      TEAM_SKILLS_API_KEY: "${TEAM_SKILLS_API_KEY:-}"
     volumes:
       - hermes_instances:/paperclip/hermes-instances
       - paperclip_data:/paperclip:ro
@@ -182,6 +183,8 @@ services:
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
       PAPERCLIP_ALLOWED_ATTACHMENT_TYPES: "*"
+      HERMES_GATEWAY_TEAM_SKILLS_URL: "http://hermes-gateway:8681"
+      TEAM_SKILLS_API_KEY: "${TEAM_SKILLS_API_KEY:-}"
     volumes:
       - paperclip_data:/paperclip
       - /mnt/services/gladiator/agents:/mnt/services/gladiator/agents
