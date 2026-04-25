@@ -88,6 +88,9 @@ def _patch_installed_agent():
         "model_tools.py",
         "agent/display.py",
         "agent/prompt_builder.py",
+        "tools/file_tools.py",
+        "tools/code_execution_tool.py",
+        "run_agent.py",
     ]:
         dst = site / rel
         src = src_dir / rel
