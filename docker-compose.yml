@@ -70,6 +70,19 @@ services:
       traefik.http.routers.paperclip-mcp.tls: true
       traefik.http.services.paperclip-mcp.loadbalancer.server.port: 8082
 
+  nextcloud-mcp:
+    build: ./nextcloud-mcp
+    container_name: nextcloud-mcp
+    restart: unless-stopped
+    environment:
+      NEXTCLOUD_URL: "${NEXTCLOUD_URL:-}"
+      NEXTCLOUD_USER: "${NEXTCLOUD_USER:-}"
+      NEXTCLOUD_APP_PASSWORD: "${NEXTCLOUD_APP_PASSWORD:-}"
+      NEXTCLOUD_MCP_API_KEY: "${NEXTCLOUD_MCP_API_KEY:-}"
+    networks:
+      - local-ai-internal
+      - nextcloud-rag
+
   hermes-gateway:
     build:
       context: ./hermes-gateway
@@ -98,6 +111,7 @@ services:
       MCP_OUTLINE_API_KEY: "${MCP_OUTLINE_API_KEY:-}"
       MCP_OUTLINE_URL: "${MCP_OUTLINE_URL:-}"
       MEMORY_API_KEY: "${MEMORY_API_KEY:-}"
+      NEXTCLOUD_MCP_API_KEY: "${NEXTCLOUD_MCP_API_KEY:-}"
       PAPERCLIP_DATA_PATH: "/paperclip"
       OUTLINE_URL: "${OUTLINE_URL:-}"
       OUTLINE_API_KEY: "${OUTLINE_API_KEY:-}"

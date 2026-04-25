@@ -302,6 +302,16 @@ Hermes gateway может держать старый JWT после того к
 - `paperclip-mcp/paperclip-mcp-backup/mcp_server/tools.py` — `_request()` returns structured 409 error with `hint` field
 - Hint tells agents to save work to Outline/disk and ask CEO to update manually
 
+### checkout_run_id stale lock (исправлено)
+
+**Симптом:** При последовательных heartbeat runs агент получает 409 на `checkout_issue` — предыдущий run оставил `checkout_run_id` на issue, но run уже завершён (succeeded). `executionRunId` очищается сервером, а `checkoutRunId` — нет.
+
+**Root cause:** `releaseIssueExecutionAndPromote` в heartbeat.js очищала `executionRunId`/`executionAgentNameKey`/`executionLockedAt` при финализации run'а, но НЕ очищала `checkoutRunId`. Следующий run того же агента пытался `checkout_issue` → 409 (checkoutRunId указывает на старый run).
+
+**Fix:** Добавлена очистка `checkoutRunId: null` в `releaseIssueExecutionAndPromote` (2 места в heartbeat.js). Патч применяется в entrypoint (`paperclip-entrypoint.sh`) через sed при каждом старте контейнера — переживает `docker compose up -d --build`.
+
+**Файл:** `/app/server/dist/services/heartbeat.js` (в контейнере paperclip-server)
+
 ### Agent prompt loading priority (IMPORTANT)
 - Adapter `execute.ts` has `DEFAULT_PROMPT_TEMPLATE` hardcoded, but `loadPromptTemplate()` checks `/paperclip/prompt-template.md` FIRST
 - **`/paperclip/prompt-template.md` overrides the JS default** — always edit the file on disk, not just the JS source
