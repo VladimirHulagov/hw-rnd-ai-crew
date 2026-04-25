@@ -43,6 +43,7 @@ def generate_profile_config(
         "mcp_rag_api_key": os.environ.get("MCP_RAG_API_KEY", ""),
         "outline_api_key": outline_api_key or os.environ.get("MCP_OUTLINE_API_KEY", ""),
         "memory_api_key": os.environ.get("MEMORY_API_KEY", ""),
+        "nextcloud_mcp_api_key": os.environ.get("NEXTCLOUD_MCP_API_KEY", ""),
         "MCP_RAG_URL": os.environ.get("MCP_RAG_URL", ""),
         "MCP_OUTLINE_URL": os.environ.get("MCP_OUTLINE_URL", ""),
         "PAPERCLIP_RUN_API_KEY": paperclip_api_key,
