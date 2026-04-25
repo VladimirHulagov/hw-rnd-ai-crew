@@ -244,9 +244,9 @@ Hermes gateway может держать старый JWT после того к
  | 1 | `list_issues(assigneeAgentId="me")` → HTTP 500 | **FIXED** — server route now resolves `me` to agent UUID |
  | 2 | `release_issue()` сбрасывает статус в «todo» и снимает исполнителя | **FIXED** — `release()` now only clears `checkoutRunId` |
  | 3 | `read_file` «File unchanged since last read» при повторном чтении cache-файлов | Использовать `terminal cat` вместо `read_file` |
- | 4 | `read_file` внутри `execute_code` — если файл уже читался обычным `read_file`, возвращает «File unchanged» вместо контента | Использовать `terminal("cat ...")` внутри скрипта |
- | 5 | `read_file` мягкое предупреждение на 3+ одинаковых вызовов подряд — контент возвращается, но warning шумит | Не блокирует работу, игнорировать |
- | 6 | `delegate_task` не подставляет плейсхолдеры — `{{VARIABLE}}` передаётся как literal текст | Встраивать данные прямо в строку или передавать путь к файлу |
+ | 4 | `read_file` внутри `execute_code` — если файл уже читался обычным `read_file`, возвращает «File unchanged» вместо контента | **FIXED** — RPC dispatch clears dedup before sandbox read_file |
+ | 5 | `read_file` мягкое предупреждение на 3+ одинаковых вызовов подряд — контент возвращается, но warning шумит | **FIXED** — порог повышен с 3→5 (warning), 4→6 (block) |
+ | 6 | `delegate_task` не подставляет плейсхолдеры — `{{VARIABLE}}` передаётся как literal текст | **BY DESIGN** — schema не обещает template substitution. Встраивать данные прямо в goal/context |
  | 7 | `set_checklist()` через MCP → не записывается | **FIXED** — `checklist` добавлен в `updateIssueSchema` (shared/validators/issue.ts) |
 
 ### Roles system
