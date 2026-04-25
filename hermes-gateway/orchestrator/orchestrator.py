@@ -90,6 +90,7 @@ def _patch_installed_agent():
         "agent/prompt_builder.py",
         "tools/file_tools.py",
         "tools/code_execution_tool.py",
+        "tools/delegate_tool.py",
         "run_agent.py",
     ]:
         dst = site / rel
@@ -227,11 +228,17 @@ def _sync_bundle_files(agent_id: str, company_id: str, profile_dir: Path):
 def _build_soul_md(role: str, name: str) -> str:
     outline_guidance = (
         "\n## Outline (knowledge base)\n"
-        "- Для поиска и чтения документов Outline используй `search_outline` (rag-mcp) — он возвращает компактные Markdown-фрагменты.\n"
-        "- Для создания и обновления документов используй `mcp_outline_*` (Outline MCP).\n"
-        "- НЕ читай полные документы через `mcp_outline_*` — это вызывает context overflow из-за ProseMirror JSON.\n"
-        "- `documents.create` возвращает ProseMirror + Markdown. Для чтения созданного документа всегда используй `documents.info` — он возвращает чистый Markdown.\n"
-        "- Перед созданием документа — всегда поиск (`mcp_outline_search`), чтобы избежать дубликатов.\n"
+        "- Для поиска и чтения документов Outline используй `mcp_rag_search_outline` — он возвращает компактные Markdown-фрагменты.\n"
+        "- Для создания и обновления документов используй `mcp_outline_documents_create` / `mcp_outline_documents_update`.\n"
+        "- ЗАПРЕЩЕНО использовать `mcp_outline_documents_search` или `mcp_outline_documents_list` для чтения — они возвращают ProseMirror JSON (в 2.5x тяжелее текста) и вызывают context overflow.\n"
+        "- Для чтения конкретного документа по ID используй `mcp_outline_documents_info` — он возвращает чистый Markdown.\n"
+        "- Перед созданием документа — всегда поиск через `mcp_rag_search_outline`, чтобы избежать дубликатов.\n"
+    )
+    paperclip_guidance = (
+        "\n## Paperclip (MCP results)\n"
+        "- MCP tool results возвращают JSON: `json.loads(result)` для парсинга. Результат — dict/list.\n"
+        "- НЕ используй ast.literal_eval — все MCP results уже валидный JSON.\n"
+        "- Paperclip tools: `mcp_paperclip_paperclip_list_issues`, `mcp_paperclip_paperclip_set_checklist`, и т.д.\n"
     )
     if role in ("ceo", "cto"):
         return (
@@ -239,12 +246,14 @@ def _build_soul_md(role: str, name: str) -> str:
             "Твоя задача — стратегия, приоритизация, координация и делегирование.\n"
             "Все документы и тексты создавай на русском языке.\n"
             + outline_guidance
+            + paperclip_guidance
         )
     return (
         f"Ты — {name}, рабочий агент в системе управления задачами Paperclip.\n"
         "Твоя задача — выполнять задания: исследование, кодирование, тестирование, документирование, анализ.\n"
         "Все документы и тексты создавай на русском языке.\n"
         + outline_guidance
+        + paperclip_guidance
     )
 
 
