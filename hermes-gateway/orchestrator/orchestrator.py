@@ -85,6 +85,7 @@ def _patch_installed_agent():
     for rel in [
         "gateway/platforms/api_server.py",
         "gateway/platforms/telegram.py",
+        "gateway/run.py",
         "model_tools.py",
         "agent/display.py",
         "agent/prompt_builder.py",
@@ -428,13 +429,6 @@ class Orchestrator:
         proc_name = self._gateway_name(agent_id)
         command = f"hermes -p {agent_id} gateway run"
 
-        existing = self.supervisor.get_process_info(proc_name)
-        if existing and existing.get("state", 0) > 0:
-            self._running_agent_ids.add(agent_id)
-            return
-
-        logger.info("Starting gateway for %s on port %d", name, port)
-
         program_conf = (
             f"[program:{proc_name}]\n"
             f"command={command}\n"
@@ -455,6 +449,13 @@ class Orchestrator:
         (conf_dir / f"{proc_name}.conf").write_text(program_conf)
 
         self.supervisor.reload_config()
+
+        existing = self.supervisor.get_process_info(proc_name)
+        if existing and existing.get("state", 0) > 0:
+            self._running_agent_ids.add(agent_id)
+            return
+
+        logger.info("Starting gateway for %s on port %d", name, port)
         self.supervisor.start_process(proc_name)
         self._running_agent_ids.add(agent_id)
 
