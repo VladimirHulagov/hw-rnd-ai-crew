@@ -13,6 +13,19 @@ services:
       - "6333"
       - "6334"
 
+  docker-guard:
+    build: ./docker-guard
+    container_name: hw-docker-guard
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      ALLOWED_LABELS: "docker-guard.allow"
+      ALLOWED_PREFIXES: ""
+      LISTEN_PORT: "2375"
+    networks:
+      - local-ai-internal
+
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
@@ -91,6 +104,8 @@ services:
     restart: unless-stopped
     depends_on:
       paperclip-server:
+        condition: service_started
+      docker-guard:
         condition: service_started
     environment:
       DATABASE_URL: "postgres://paperclip:paperclip@paperclip-db:5432/paperclip"
