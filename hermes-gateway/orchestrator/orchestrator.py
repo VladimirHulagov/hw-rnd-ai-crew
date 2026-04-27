@@ -226,7 +226,7 @@ def _sync_bundle_files(agent_id: str, company_id: str, profile_dir: Path):
             logger.info("Synced %s → %s for agent %s", f.name, dst, agent_id[:8])
 
 
-def _build_soul_md(role: str, name: str) -> str:
+def _build_soul_md(role: str, name: str, enable_docker: bool = False) -> str:
     outline_guidance = (
         "\n## Outline (knowledge base)\n"
         "- Для поиска и чтения документов Outline используй `mcp_rag_search_outline` — он возвращает компактные Markdown-фрагменты.\n"
@@ -241,6 +241,16 @@ def _build_soul_md(role: str, name: str) -> str:
         "- НЕ используй ast.literal_eval — все MCP results уже валидный JSON.\n"
         "- Paperclip tools: `mcp_paperclip_paperclip_list_issues`, `mcp_paperclip_paperclip_set_checklist`, и т.д.\n"
     )
+    docker_guidance = (
+        "\n## Docker Access\n"
+        "У тебя есть доступ к Docker CLI для управления контейнерами.\n"
+        "Команды:\n"
+        "- `docker ps` — список запущенных контейнеров\n"
+        "- `docker restart <container>` — перезапуск\n"
+        "- `docker logs <container> [-f]` — логи\n"
+        "- `docker stop/start <container>` — управление жизненным циклом\n"
+        "- `docker exec <container> <cmd>` — выполнение команд\n"
+    )
     if role in ("ceo", "cto"):
         return (
             f"Ты — {name}, руководящий агент в системе управления задачами Paperclip.\n"
@@ -248,6 +258,7 @@ def _build_soul_md(role: str, name: str) -> str:
             "Все документы и тексты создавай на русском языке.\n"
             + outline_guidance
             + paperclip_guidance
+            + (docker_guidance if enable_docker else "")
         )
     return (
         f"Ты — {name}, рабочий агент в системе управления задачами Paperclip.\n"
@@ -255,6 +266,7 @@ def _build_soul_md(role: str, name: str) -> str:
         "Все документы и тексты создавай на русском языке.\n"
         + outline_guidance
         + paperclip_guidance
+        + (docker_guidance if enable_docker else "")
     )
 
 
@@ -365,6 +377,8 @@ class Orchestrator:
             and bool(agent_telegram.get("botToken"))
             and bool(agent_telegram.get("chatId"))
         )
+        agent_docker = adapter_config.get("docker", {}) or {}
+        enable_docker = agent_docker.get("enabled", False)
 
         name = agent.get("name", "Agent")
         company_id = agent.get("companyId", agent.get("company_id", ""))
@@ -401,7 +415,7 @@ class Orchestrator:
             logger.info("Created config for agent %s (%s)", name, agent_id[:8])
 
         role = agent.get("role", "general")
-        soul_content = _read_paperclip_instructions(agent_id, company_id) or _build_soul_md(role, name)
+        soul_content = _read_paperclip_instructions(agent_id, company_id) or _build_soul_md(role, name, enable_docker)
         soul_path = profile_dir / "SOUL.md"
         if not soul_path.exists() or soul_path.read_text() != soul_content:
             soul_path.write_text(soul_content)
@@ -429,11 +443,24 @@ class Orchestrator:
         proc_name = self._gateway_name(agent_id)
         command = f"hermes -p {agent_id} gateway run"
 
+        base_env = (
+            f"HERMES_HOME=\"{profile_dir}\""
+            f",PAPERCLIP_RUN_API_KEY=\"{agent_key}\""
+            f",TELEGRAM_BOT_TOKEN=\"{agent_telegram.get('botToken', '') if enable_telegram else ''}\""
+            f",TELEGRAM_CHAT_ID=\"{agent_telegram.get('chatId', '') if enable_telegram else ''}\""
+            f",TELEGRAM_HOME_CHANNEL=\"{agent_telegram.get('chatId', '') if enable_telegram else ''}\""
+            f",TELEGRAM_CLARIFY_TIMEOUT=\"{agent_telegram.get('defaultTimeout', 600) if enable_telegram else '600'}\""
+            f",TELEGRAM_ALLOWED_USERS=\"{agent_telegram.get('allowedUsers', '') if enable_telegram else ''}\""
+            f",TELEGRAM_REQUIRE_MENTION=\"true\""
+        )
+        if enable_docker:
+            base_env += ",DOCKER_HOST=\"tcp://docker-guard:2375\""
+
         program_conf = (
             f"[program:{proc_name}]\n"
             f"command={command}\n"
             f"directory=/\n"
-            f"environment=HERMES_HOME=\"{profile_dir}\",PAPERCLIP_RUN_API_KEY=\"{agent_key}\",TELEGRAM_BOT_TOKEN=\"{agent_telegram.get('botToken', '') if enable_telegram else ''}\",TELEGRAM_CHAT_ID=\"{agent_telegram.get('chatId', '') if enable_telegram else ''}\",TELEGRAM_HOME_CHANNEL=\"{agent_telegram.get('chatId', '') if enable_telegram else ''}\",TELEGRAM_CLARIFY_TIMEOUT=\"{agent_telegram.get('defaultTimeout', 600) if enable_telegram else '600'}\",TELEGRAM_ALLOWED_USERS=\"{agent_telegram.get('allowedUsers', '') if enable_telegram else ''}\",TELEGRAM_REQUIRE_MENTION=\"true\"\n"
+            f"environment={base_env}\n"
             f"autostart=true\n"
             f"autorestart=true\n"
             f"stdout_logfile=/dev/fd/1\n"
