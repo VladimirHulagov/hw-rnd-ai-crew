@@ -19,3 +19,6 @@
 [submodule "paperclip-mcp"]
 	path = paperclip-mcp
 	url = https://github.com/VladimirHulagov/paperclip-mcp.git
+[submodule "docker-guard"]
+	path = docker-guard
+	url = https://github.com/VladimirHulagov/docker-guard.git
