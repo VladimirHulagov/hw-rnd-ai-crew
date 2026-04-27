@@ -39,6 +39,37 @@ if [ -d "$HERMES_SHARED_CONFIG" ]; then
     done
 fi
 
+PATCHES_DIR="/opt/paperclip-patches"
+
+# Patch: rebuild shared + db packages if checklist is missing from compiled validators
+# The paperclip image doesn't include checklist support — we inject it via source patches
+if [ -d "$PATCHES_DIR" ]; then
+    SHARED_VAL="/app/packages/shared/dist/validators/issue.js"
+    NEED_REBUILD=false
+
+    if [ -f "$SHARED_VAL" ] && ! grep -q "checklist" "$SHARED_VAL" 2>/dev/null; then
+        NEED_REBUILD=true
+    fi
+
+    if [ "$NEED_REBUILD" = true ]; then
+        echo "[entrypoint] Rebuilding shared + db packages (checklist support)..."
+        cp "$PATCHES_DIR/shared-validators-issue.ts" /app/packages/shared/src/validators/issue.ts
+        cp "$PATCHES_DIR/shared-types-issue.ts" /app/packages/shared/src/types/issue.ts
+        cp "$PATCHES_DIR/db-schema-issues.ts" /app/packages/db/src/schema/issues.ts
+
+        npx tsc -p /app/packages/shared/tsconfig.json 2>&1 | grep -v "npm warn" || true
+        npx tsc -p /app/packages/db/tsconfig.json 2>&1 | grep -v "npm warn" || true
+
+        node -e "const esbuild = require('esbuild'); esbuild.buildSync({entryPoints:['server/src/index.ts'],outdir:'server/dist',bundle:false,format:'esm',platform:'node',target:'node20',sourcemap:true});" 2>&1
+
+        if grep -q "checklist" "$SHARED_VAL" 2>/dev/null; then
+            echo "[entrypoint] Checklist support rebuilt OK."
+        else
+            echo "[entrypoint] WARNING: checklist still missing after rebuild!"
+        fi
+    fi
+fi
+
 # Patch: clear checkoutRunId on run finalization (heartbeat.js)
 # releaseIssueExecutionAndPromote clears executionRunId but NOT checkoutRunId.
 # When a heartbeat run finishes, the next run gets 409 because checkoutRunId

@@ -125,6 +125,7 @@ services:
       - hermes_src:/opt/hermes-agent-build
       - ./hermes-agent:/opt/hermes-agent:ro
       - ./hermes-shared-config:/opt/hermes-shared-config:ro
+      - ./hermes-gateway/orchestrator/agent_api_keys.json:/opt/orchestrator/agent_api_keys.json:ro
       - gateway_ports:/run/gateway-ports
     networks:
       - local-ai-internal
@@ -202,6 +203,9 @@ services:
       - ./hermes-paperclip-adapter/dist/server/execute.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/execute.js:ro
       - ./paperclip/ui/dist:/app/ui/dist
       - gateway_ports:/run/gateway-ports:ro
+      - ./paperclip/packages/shared/src/validators/issue.ts:/opt/paperclip-patches/shared-validators-issue.ts:ro
+      - ./paperclip/packages/shared/src/types/issue.ts:/opt/paperclip-patches/shared-types-issue.ts:ro
+      - ./paperclip/packages/db/src/schema/issues.ts:/opt/paperclip-patches/db-schema-issues.ts:ro
     networks:
       - local-ai-internal
       - traefik
