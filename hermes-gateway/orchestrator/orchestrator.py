@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import base64
 import hashlib
@@ -24,6 +26,7 @@ from config_generator import ensure_profile_dirs, generate_profile_config
 from port_manager import PortManager
 from outline_user import ensure_outline_user
 from supervisor_client import SupervisorClient
+from skill_importer import import_hermes_skills, get_skill_info
 
 
 _AGENT_API_KEYS_PATH = Path(__file__).parent / "agent_api_keys.json"
@@ -31,7 +34,10 @@ _AGENT_API_KEYS_PATH = Path(__file__).parent / "agent_api_keys.json"
 
 def _load_agent_api_keys() -> dict[str, str]:
     if _AGENT_API_KEYS_PATH.exists():
-        return json.loads(_AGENT_API_KEYS_PATH.read_text())
+        try:
+            return json.loads(_AGENT_API_KEYS_PATH.read_text())
+        except (json.JSONDecodeError, ValueError):
+            return {}
     return {}
 
 logging.basicConfig(
@@ -243,13 +249,8 @@ def _build_soul_md(role: str, name: str, enable_docker: bool = False) -> str:
     )
     docker_guidance = (
         "\n## Docker Access\n"
-        "У тебя есть доступ к Docker CLI для управления контейнерами.\n"
-        "Команды:\n"
-        "- `docker ps` — список запущенных контейнеров\n"
-        "- `docker restart <container>` — перезапуск\n"
-        "- `docker logs <container> [-f]` — логи\n"
-        "- `docker stop/start <container>` — управление жизненным циклом\n"
-        "- `docker exec <container> <cmd>` — выполнение команд\n"
+        "У тебя есть доступ к Docker CLI через docker-guard прокси.\n"
+        "Загрузи навык `docker-management` командой `skill_view` для инструкций.\n"
     )
     if role in ("ceo", "cto"):
         return (
@@ -292,6 +293,8 @@ class Orchestrator:
         self._known_agents: dict[str, dict] = {}
         self._source_fingerprint: str | None = None
         self._instructions_hashes: dict[str, dict] = {}
+        self._skills_imported = False
+        self.db_conn = psycopg2.connect(DATABASE_URL)
 
     def _profile_dir(self, agent_id: str) -> Path:
         return self.profiles_root / agent_id
@@ -351,6 +354,54 @@ class Orchestrator:
             getattr(self, '_instructions_hashes', {})[stored_key] = current_hashes
             return True
         return False
+
+    def _sync_agent_skills(self, agent: dict, profile_dir: Path):
+        adapter_config = agent.get("adapter_config", {}) or {}
+        if isinstance(adapter_config, str):
+            try:
+                adapter_config = json.loads(adapter_config)
+            except (json.JSONDecodeError, TypeError):
+                adapter_config = {}
+
+        sync_config = adapter_config.get("paperclipSkillSync", {}) or {}
+        desired_keys = sync_config.get("desiredSkills", []) or []
+
+        company_id = agent.get("companyId", agent.get("company_id", ""))
+        if not company_id:
+            return
+
+        skills_dir = profile_dir / "skills"
+        if skills_dir.exists():
+            for item in list(skills_dir.rglob("*")):
+                if item.is_symlink():
+                    item.unlink()
+                elif item.is_file():
+                    item.unlink()
+            for cat_dir in list(skills_dir.iterdir()):
+                if cat_dir.is_dir() and not any(cat_dir.iterdir()):
+                    cat_dir.rmdir()
+
+        for key in desired_keys:
+            info = get_skill_info(self.db_conn, company_id, key)
+            if not info:
+                continue
+
+            category = info.get("category", "general")
+            slug = info.get("slug", key.split("/")[-1])
+            source_path = info.get("source_locator", "")
+
+            target = skills_dir / category / slug
+            target.parent.mkdir(parents=True, exist_ok=True)
+
+            source = Path(source_path) if source_path else None
+            if source and source.is_dir() and (source / "SKILL.md").exists():
+                try:
+                    target.symlink_to(source)
+                except OSError as exc:
+                    logger.warning("Failed to symlink skill %s: %s", slug, exc)
+            elif info.get("markdown"):
+                target.mkdir(parents=True, exist_ok=True)
+                (target / "SKILL.md").write_text(info["markdown"])
 
     async def _restart_agent(self, agent_id: str, agent: dict):
         proc_name = self._gateway_name(agent_id)
@@ -423,6 +474,8 @@ class Orchestrator:
                 logger.info("Synced Paperclip instructions → SOUL.md for %s", name)
 
         _sync_bundle_files(agent_id, company_id, profile_dir)
+
+        self._sync_agent_skills(agent, profile_dir)
 
         env_content = "\n".join([
             f"GLM_API_KEY={os.environ.get('GLM_API_KEY', '')}",
@@ -540,6 +593,14 @@ class Orchestrator:
 
         _ensure_hermes_installed()
         _ensure_profiles_root()
+
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            n = import_hermes_skills(conn)
+            logger.info("Hermes skills import: %d skill-rows upserted", n)
+            conn.close()
+        except Exception as exc:
+            logger.error("Failed to import hermes skills: %s", exc)
 
         while True:
             try:
