@@ -2,3 +2,4 @@
 *.pyc
 __pycache__
 .pytest_cache
+hermes-gateway/orchestrator/agent_api_keys.json
