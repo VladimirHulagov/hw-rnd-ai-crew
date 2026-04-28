@@ -1,0 +1,44 @@
+version: "3.8"
+
+services:
+  paperclip-test-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: paperclip_test
+      POSTGRES_PASSWORD: paperclip_test
+      POSTGRES_DB: paperclip_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip_test"]
+      interval: 2s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+
+  paperclip-test-server:
+    image: paperclip-server:latest
+    depends_on:
+      paperclip-test-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://paperclip_test:paperclip_test@127.0.0.1:5434/paperclip_test"
+      PORT: "3100"
+      HOST: "127.0.0.1"
+      SERVE_UI: "true"
+      PAPERCLIP_DEPLOYMENT_MODE: "local_trusted"
+      PAPERCLIP_INSTANCE_ID: "test"
+      PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
+      BETTER_AUTH_SECRET: "test-secret-key-for-e2e-tests-not-production"
+    network_mode: host
+    volumes:
+      - ./hermes-paperclip-adapter/dist/shared/constants.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/shared/constants.js:ro
+      - ./hermes-paperclip-adapter/dist/index.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/index.js:ro
+      - ./hermes-paperclip-adapter/dist/server/index.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/index.js:ro
+      - ./hermes-paperclip-adapter/dist/server/models.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/models.js:ro
+      - ./hermes-paperclip-adapter/dist/server/test.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/test.js:ro
+      - ./hermes-paperclip-adapter/dist/server/execute.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/execute.js:ro
+      - paperclip_test_data:/paperclip
+
+volumes:
+  paperclip_test_data:

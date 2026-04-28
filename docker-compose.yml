@@ -140,6 +140,7 @@ services:
       - hermes_src:/opt/hermes-agent-build
       - ./hermes-agent:/opt/hermes-agent:ro
       - ./hermes-shared-config:/opt/hermes-shared-config:ro
+      - ./hermes-gateway/skills:/opt/skills:ro
       - ./hermes-gateway/orchestrator/agent_api_keys.json:/opt/orchestrator/agent_api_keys.json:ro
       - gateway_ports:/run/gateway-ports
     networks:
