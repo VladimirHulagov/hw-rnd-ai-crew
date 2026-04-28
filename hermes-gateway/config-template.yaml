@@ -82,7 +82,7 @@ mcp_servers:
     enabled: true
     timeout: 60
     connect_timeout: 30
-_config_version: 9
+_config_version: 11
 security:
   redact_secrets: true
   tirith_enabled: false

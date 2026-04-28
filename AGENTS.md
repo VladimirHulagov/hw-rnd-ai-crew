@@ -96,6 +96,31 @@ Hermes gateway может держать старый JWT после того к
 
 Решение: валидация в `actorMiddleware` (`auth.ts`) — если `req.actor.runId` из JWT ссылается на несуществующий run, middleware очищает его в `undefined` и логирует warn. Один DB-запрос на запрос, покрывает все downstream FK.
 
+### Agent Skills
+
+Hermes-agent имеет систему навыков (SKILL.md) с progressive disclosure: `skills_list` → `skill_view`.
+
+- **Источники навыков** — `skill_importer.py` в оркестраторе сканирует 3 директории:
+  - `/opt/skills` — кастомные навыки проекта (docker-management для docker-guard) — **приоритетнее остальных**
+  - `/opt/hermes-agent/skills` — 73 встроенных навыка (software-development, devops, github, research, mlops и т.д.)
+  - `/opt/hermes-agent/optional-skills` — 46 опциональных (blockchain, security и т.д.)
+- Приоритет: если slug дублируется (например `docker-management`), первый найденный (из `/opt/skills`) побеждает
+- Навыки импортируются в `company_skills` БД при старте оркестратора (ключ: `hermes/hermes-agent/<category>/<slug>`, sourceKind: `hermes_bundled`)
+- `source_type='catalog'`, `source_locator=NULL` — чтобы избежать `pruneMissingLocalPathSkills()` и `resolveLocalSkillFilePath()` ENOENT
+- Метка источника хранится в `metadata.sourceLabel` ("Hermes Agent", "Hermes Agent (optional)", "Project skills"), путь — в `metadata.sourcePath`
+- Server-side: `deriveSkillSourceInfo()` в `company-skills.js` патчен для `metadata.sourceKind === "hermes_bundled"` — возвращает `sourceLabel` из metadata, badge "catalog", `sourcePath: null`
+- Импорт выполняется для ВСЕХ компаний в БД (upsert, INSERT ON CONFLICT UPDATE)
+- **`_sync_agent_skills()`** — читает `paperclipSkillSync.desiredSkills` из `adapter_config` агента и:
+  - Создаёт **symlinks** для hermes-навыков (путь существует в контейнере)
+  - Пишет **файлы из БД** для paperclip-bundled навыков (путь `/app/skills/...` недоступен в hermes-gateway)
+  - Удаляет stale symlinks/файлы при каждом sync
+- CEO управляет навыками per-agent через UI → Paperclip хранит в `adapter_config.paperclipSkillSync.desiredSkills`
+- Агенты видят только включённые навыки (loaded from profile `skills/` dir)
+- `external_dirs` **удалён** из `config-template.yaml` — навыки загружаются только из профиля
+- **Docker skill** (`hermes-gateway/skills/devops/docker-management/SKILL.md`) — кастомный навык на русском для docker-guard
+- Навыки монтируются read-only через `./hermes-gateway/skills:/opt/skills:ro` в docker-compose.yml
+- `queryKeys.ts` в контейнере может быть устаревшим — UI src НЕ bind-mounted. После изменений в `paperclip/ui/src/lib/queryKeys.ts` нужен `docker cp` + vite build + bump `sw.js` CACHE_NAME
+
 ### Agent Memory Service
 
 Векторизованная память агентов — session history и MEMORY.md → Qdrant, доступ через MCP tools.
@@ -131,6 +156,8 @@ Hermes gateway может держать старый JWT после того к
 - Контейнер `paperclip-server` работает из образа `paperclip-server:latest`. Исходники в `/app/server/dist/` — скомпилированный ESM JS
 - **UI dist bind-mounted**: `./paperclip/ui/dist:/app/ui/dist` (rw) — Vite build в контейнере пишет на хост
 - **UI src НЕ bind-mounted** — перед `vite build` нужно `docker cp paperclip/ui/src/... paperclip-server:/app/ui/src/...` для каждого изменённого файла
+- **UI src устаревает в контейнере** — после `docker compose up -d --build` контейнер получает старые исходники из образа. Нужно `docker cp` ВСЕ изменённые файлы (`queryKeys.ts`, `companySkills.ts`, и т.д.) перед каждым `vite build`
+- `pruneMissingLocalPathSkills()` в `company-skills.ts` — при каждом `GET /companies/:id/skills` сервер проверяет `source_type='local_path'` навыки: если `source_locator` не существует на диске контейнера paperclip-server, навык **удаляется из БД**. Решение: использовать `source_type='catalog'` для навыков, чьи файлы недоступны в paperclip-server
 - **Server dist НЕ bind-mounted** — нужен `docker cp` + `docker compose restart` для серверных фиксов
 - **Adapter bind-mounted (ro)**: `./hermes-paperclip-adapter/dist/` → отдельные файлы в `/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/...`
 - UI: `docker exec -w /app/ui paperclip-server node node_modules/vite/bin/vite.js build`
@@ -183,7 +210,9 @@ Hermes gateway может держать старый JWT после того к
 - `hermes-gateway/orchestrator/session_indexer.py` — cron indexer for agent memory (Ollama embed → Qdrant)
 - `hermes-gateway/orchestrator/memory_mcp_server.py` — MCP server for `search_memory` / `get_agent_context`
 - `hermes-gateway/supervisord.conf` — session-indexer + memory-mcp programs
-- `docker-compose.yml` — ui/dist bind mount, hermes-gateway service, adapter bind mounts, hermes_profiles volume
+- `hermes-gateway/config-template.yaml` — agent config template, includes `skills.external_dirs`
+- `hermes-gateway/skills/docker-management/SKILL.md` — custom Docker skill (docker-guard proxy, allowed containers)
+- `docker-compose.yml` — ui/dist bind mount, hermes-gateway service, adapter bind mounts, hermes_profiles volume, skills mount
 
 ### RAG Worker (Outline RAG):
 - `rag-worker/rag/outline.py` — Outline REST API client (`list_documents`, `get_document_markdown`, `list_collections`)
@@ -412,3 +441,44 @@ Hermes gateway может держать старый JWT после того к
 **Решение:** Постоянные `pcp_*` API ключи вместо per-run JWT. Ключи хранятся в `agent_api_keys.json` и прописываются в supervisor config как `PAPERCLIP_RUN_API_KEY`. Gateway `api_server.py` не перезаписывает их JWT. `X-Paperclip-Run-ID` header передаётся отдельно через `${PAPERCLIP_HEARTBEAT_RUN_ID}` env var для опционального FK linking.
 
 **Оставшийся edge case:** `X-Paperclip-Run-ID` может ссылаться на удалённый heartbeat_run. `actorMiddleware` в auth.ts очищает `runId` в `undefined` — запрос выполняется без FK linking (без ошибки 401).
+
+### Skill files endpoint 500 (исправлено)
+
+**Симптом:** `GET /api/companies/:id/skills/:skillId/files?path=SKILL.md` → 500 ENOENT для hermes catalog-навыков.
+
+**Root cause:** `resolveLocalSkillFilePath()` использует `source_locator` как путь. При `source_locator="Hermes Agent (optional)"` → `/app/Hermes Agent (optional)/SKILL.md` → ENOENT. Fallback на `skill.markdown` не срабатывает — `readFile()` выбрасывает исключение ДО достижения else-branch.
+
+**Fix:** `source_locator=NULL` → `normalizeSkillDirectory()` возвращает null → `resolveLocalSkillFilePath()` возвращает null → `readFile()` использует `skill.markdown` из БД. Метка источника перенесена в `metadata.sourceLabel`.
+
+### Skills sync 500 (исправлено)
+
+**Симптом:** `POST /api/agents/:id/skills/sync` → 500 `Cannot read properties of undefined (reading 'length')` — `snapshot.entries.length`.
+
+**Root cause:** `hermes-paperclip-adapter/dist/server/index.js` экспортировал `listSkills`/`syncSkills` с неправильным форматом ответа (`{ desiredSkills, persistedSkills }` вместо `{ entries, warnings, supported, mode }`). Правильная реализация — в `skills.js` (`buildHermesSkillSnapshot`).
+
+**Fix:** `index.js` теперь реэкспортирует `listHermesSkills`/`syncHermesSkills` из `./skills.js`. Исходник `src/server/index.ts` обновлён соответственно.
+
+### Missing server routes (исправлено)
+
+- `/api/companies/:id/team-skills` — отсутствовал → 404. Добавлен stub: `res.json([])`
+- `/api/companies/:id/hidden-sources` — отсутствовал → 404. Добавлен stub: `res.json([])`
+- Оба маршрута используют `assertCompanyAccess()` для авторизации
+- Патчи в `/app/server/dist/routes/company-skills.js` — переживают restart, но НЕ переживают `docker compose up -d --build`
+
+### Server patches persistence
+
+Патчи в `/app/server/dist/` внутри контейнера paperclip-server:
+- Переживают: `docker compose restart`
+- НЕ переживают: `docker compose up -d --build` (image rebuild)
+- Патченные файлы: `company-skills.js` (hermes_bundled case, stub routes), `company-skills.js` в services
+- Нет entrypoint script — PID 1 запускает `node server/dist/index.js` напрямую
+
+### Docker-guard container list filtering (исправлено)
+
+**Симптом:** Агент видит ВСЕ 49 контейнеров через docker-guard, хотя write-операции блокируются корректно.
+
+**Root cause:** `guard.py` пропускал все GET-запросы без фильтрации (security model: "read-only unrestricted"). `GET /containers/json` возвращал полный список контейнеров.
+
+**Fix:** Добавлена `_filtered_container_list()` — при `GET /containers/json`.guard запрашивает полный список у Docker, фильтрует по `ALLOWED_LABELS` и `ALLOWED_PREFIXES`, возвращает только разрешённые контейнеры (3 из 49). Остальные GET-эндпоинты (`/_ping`, `/version`, `/images/json`) пропускаются без фильтрации.
+
+**Текущий scope:** `ALLOWED_LABELS=docker-guard.allow`, `ALLOWED_PREFIXES=` (empty) — агент видит только grocy, grocy-shopping-agent, mail-receipts.
