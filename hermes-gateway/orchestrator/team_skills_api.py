@@ -3,6 +3,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -237,6 +240,59 @@ async def write_file(
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.post("/sync-source/{source_id}")
+async def sync_source(source_id: str, _=Depends(_check_auth)):
+    from skill_git_sync import SkillGitSync
+    if not DATABASE_URL:
+        raise HTTPException(500, "DATABASE_URL not set")
+    conn = psycopg2.connect(DATABASE_URL)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, company_id, repo_url, ref, sync_path, sync_token, sync_author,
+                       source_kind, source_locator
+                FROM skill_sources WHERE id = %s
+            """, (source_id,))
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(404, "Source not found")
+        sid, company_id, repo_url, ref, sync_path, sync_token, sync_author, source_kind, source_locator = row
+        if not repo_url:
+            raise HTTPException(400, "Source has no repo_url")
+        sync = SkillGitSync(
+            source_id=sid,
+            repo_url=repo_url,
+            branch=ref or "main",
+            path=sync_path or "skills/",
+            token=sync_token or os.environ.get("SKILLS_SYNC_TOKEN", ""),
+            author=sync_author or "Orchestrator <orchestrator@hermes>",
+            source_kind=source_kind or "",
+            source_locator=source_locator,
+        )
+        with conn.cursor() as cur:
+            if source_kind == "agent" and source_locator:
+                cur.execute("SELECT company_id FROM agents WHERE id = %s", (source_locator,))
+                agent_row = cur.fetchone()
+                company_ids = [agent_row[0]] if agent_row else []
+            else:
+                cur.execute("SELECT id FROM companies")
+                company_ids = [r[0] for r in cur.fetchall()]
+        results = []
+        for cid in company_ids:
+            push = sync.push_skills(conn, cid)
+            pull = sync.pull_skills(conn, cid)
+            if not push.get("skipped") or pull.get("imported") or pull.get("updated") or pull.get("removed"):
+                results.append({"company_id": cid, "push": push, "pull": pull})
+        return {"source_id": sid, "synced": results}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("sync-source failed: %s", exc)
+        raise HTTPException(500, str(exc))
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
