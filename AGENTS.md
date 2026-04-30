@@ -10,6 +10,7 @@ HW RND AI Crew is a Docker Compose stack providing RAG over Nextcloud files, Pap
 
 - All commit messages must be written in English.
 - Paperclip runs from a Docker image (`paperclip-server:latest`). After code changes in `paperclip/`, rebuild: `docker build -t paperclip-server:latest paperclip/` then `docker compose up -d paperclip-server`.
+- **Deployment workflow:** Changes are first tested by patching files inside running containers (`docker cp`). Once user confirms everything works, the workflow is: (1) copy patches into repo source files, (2) commit and push, (3) rebuild Docker images, (4) `docker compose up -d --force-recreate`. Never leave changes only in containers — they are lost on recreate. Source files in the repo are the source of truth.
 
 ## Architecture
 
@@ -133,6 +134,34 @@ Hermes-agent имеет систему навыков (SKILL.md) с progressive 
 - Профили агентов персистятся через Docker volume `hermes_profiles` → `/root/.hermes/profiles`
 - Конфигурация: `memory` mcp_server в `config-template.yaml` / `config.yaml`, переменные `OLLAMA_BASE_URL`, `QDRANT_URL`, `EMBED_MODEL`, `MEMORY_API_KEY`
 
+### Agent Skill Writeback
+
+Оркестратор автоматически обнаруживает навыки, созданные агентами через `skill_manage` tool, и персистит их в `company_skills` БД. Поддерживается двунаправленная синхронизация с git-репозиторием.
+
+- **skill_scanner.py** — сканирует `profiles/{agentId}/skills/` на предмет новых/изменённых SKILL.md (не symlinks)
+  - Пропускает symlinks (hermes-bundled навыки, подмонтированные `_sync_agent_skills()`)
+  - Пропускает навыки с slug, совпадающим с hermes-bundled (DB-sourced навыки, записанные `_sync_agent_skills()`)
+  - Отслеживает mtime+size хэш в `profiles/skill-scanner-state.json` — неизменённые файлы пропускаются
+  - DB key: `agent/{agent_id}/{category}/{slug}`, metadata.sourceKind: `agent_created`
+  - metadata включает: `authorAgentId`, `authorAgentName`, `category`
+  - `source_type='catalog'`, `source_locator=NULL` — аналогично hermes_bundled навыкам
+- **skill_git_sync.py** — `SkillGitSync` класс для двунаправленной синхронизации с git repo
+  - **Push**: `company_skills` (sourceKind in `agent_created`, `git_sync`) → SKILL.md в repo. Удаляет orphaned-файлы.
+  - **Pull**: SKILL.md из repo → `company_skills` (sourceKind: `git_sync`). Скрывает (hidden=true) навыки, удалённые из repo.
+  - Auth: HTTPS + PAT (embedded в URL: `https://{token}@github.com/...`)
+  - Git author через `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` env vars
+  - Клонирует в `/tmp/skill-git-sync-repo`, при повторных запусках делает `git pull --rebase`
+- **Настройки**: `instance_settings.skills_sync` jsonb (repoUrl, branch, path, token, author)
+  - API: `GET/PATCH /api/instance/settings/skills-sync`, `POST .../trigger`
+  - UI: секция "Skill Repository" в Instance Settings (InstanceGeneralSettings.tsx)
+  - Orchestrator читает из БД напрямую при каждом reconcile cycle
+- **Server-side**: `deriveSkillSourceInfo()` в `company-skills.ts` — два новых случая:
+  - `metadata.sourceKind === "agent_created"` → badge `agent_created`, label `Agent: {name}`, read-only
+  - `metadata.sourceKind === "git_sync"` → badge `github`, label "Git Sync" или repo URL, read-only
+- **UI badge**: `CompanySkills.tsx` — `Bot` icon для `agent_created` badge, группировка по `sourceLabel` (имя агента)
+- **E2E tests**: `e2e/test_skills_api.py` (13 API route tests), `e2e/test_skills_ui.py` (30 UI tests) — все httpx + Playwright
+- **Test infrastructure**: `docker-compose.test.yml` (port 3100, `authenticated` mode), `e2e/patch_test.sh`, `e2e/seed_skills_e2e.sql`
+
 ### Issue Checklist
 
 Нативный чеклист задач — замена PROGRESS.md, персистентный в БД Paperclip.
@@ -209,9 +238,13 @@ Hermes-agent имеет систему навыков (SKILL.md) с progressive 
 - `hermes-gateway/orchestrator/orchestrator.py` — orchestrator + `_patch_installed_agent()` (hash-based copy)
 - `hermes-gateway/orchestrator/session_indexer.py` — cron indexer for agent memory (Ollama embed → Qdrant)
 - `hermes-gateway/orchestrator/memory_mcp_server.py` — MCP server for `search_memory` / `get_agent_context`
+- `hermes-gateway/orchestrator/skill_scanner.py` — profile scanner + DB upsert for agent-created skills
+- `hermes-gateway/orchestrator/skill_git_sync.py` — `SkillGitSync` bidirectional git push/pull
 - `hermes-gateway/supervisord.conf` — session-indexer + memory-mcp programs
 - `hermes-gateway/config-template.yaml` — agent config template, includes `skills.external_dirs`
 - `hermes-gateway/skills/docker-management/SKILL.md` — custom Docker skill (docker-guard proxy, allowed containers)
+- `hermes-gateway/tests/test_skill_scanner.py` — 18 tests for agent skill discovery
+- `hermes-gateway/tests/test_skill_git_sync.py` — 10 tests for git sync
 - `docker-compose.yml` — ui/dist bind mount, hermes-gateway service, adapter bind mounts, hermes_profiles volume, skills mount
 
 ### RAG Worker (Outline RAG):
@@ -242,23 +275,35 @@ Hermes-agent имеет систему навыков (SKILL.md) с progressive 
 ### Paperclip UI (modified):
 - `paperclip/ui/src/pages/Costs.tsx` — dual-metric budget cards
 - `paperclip/ui/src/pages/AgentDetail.tsx` — budget cards, transcript hiddenTypes/toggle
-- `paperclip/ui/src/pages/InstanceGeneralSettings.tsx` — Regional block (timezone + 24h)
+- `paperclip/ui/src/pages/InstanceGeneralSettings.tsx` — Regional block (timezone + 24h) + Skill Repository section (git sync settings)
+- `paperclip/ui/src/pages/CompanySkills.tsx` — `Bot` icon badge for `agent_created`, skill grouping by `sourceLabel`
 - `paperclip/ui/src/lib/utils.ts` — formatDateTime/formatDate с timezone opts
 - `paperclip/ui/src/hooks/useTimeSettings.ts` — timezone, timeFormat hooks
 - `paperclip/ui/src/components/CommentThread.tsx` — использует `useTimeSettings()` для 24h/12h
 - `paperclip/ui/src/components/transcript/RunTranscriptView.tsx` — timestamps, Brain icon, filters
 - `paperclip/ui/src/components/IssueProperties.tsx` — checklist rendering (CheckSquare/Square, progress)
 - `paperclip/ui/src/components/PropertiesPanel.tsx` — "Details" panel title
+- `paperclip/ui/src/api/companySkills.ts` — client API: `setVisibility`, `deleteBySource`, `listIncludingHidden`
 
 ### Paperclip Server (modified):
 - `paperclip/server/src/services/budgets.ts` — `migratePoliciesMetric` деактивирует вместо DELETE
-- `paperclip/server/src/services/instance-settings.ts` — timezone/timeFormat defaults
+- `paperclip/server/src/services/instance-settings.ts` — timezone/timeFormat defaults + `skillsSync` get/update
+- `paperclip/server/src/services/company-skills.ts` — `agent_created`/`git_sync` cases in `deriveSkillSourceInfo`, `setVisibility`, `deleteBySource`
+- `paperclip/server/src/routes/company-skills.ts` — all skill routes: setVisibility, deleteBySource, hiddenSources, teamSkills
+- `paperclip/server/src/routes/instance-settings.ts` — skillsSync GET/PATCH/trigger endpoints
 
 ### Shared package (modified):
 - `paperclip/packages/shared/src/types/instance.ts` — TimeFormat type, timezone/timeFormat fields
 - `paperclip/packages/shared/src/validators/instance.ts` — timezone/timeFormat zod schemas
 - `paperclip/packages/shared/src/types/issue.ts` — IssueChecklistItem type, checklist field
 - `paperclip/packages/shared/src/validators/issue.ts` — issueChecklistItemSchema, issueChecklistSchema
+
+### E2E Tests:
+- `e2e/test_skills_ui.py` — 30 Playwright UI tests (sidebar, filter, source groups, icons, detail pane, skill tree)
+- `e2e/test_skills_api.py` — 13 API route tests (setVisibility, deleteBySource, hiddenSources, teamSkills, deleteSkill)
+- `e2e/seed_skills_e2e.sql` — Comprehensive seed data for test instance
+- `e2e/patch_test.sh` — Script to sync production patches into test container
+- `docker-compose.test.yml` — Test Paperclip instance (DB on 5434, server on 3100, `authenticated` mode)
 
 ### DB (modified):
 - `paperclip/packages/db/src/schema/issues.ts` — checklist jsonb column
@@ -482,3 +527,23 @@ Hermes-agent имеет систему навыков (SKILL.md) с progressive 
 **Fix:** Добавлена `_filtered_container_list()` — при `GET /containers/json`.guard запрашивает полный список у Docker, фильтрует по `ALLOWED_LABELS` и `ALLOWED_PREFIXES`, возвращает только разрешённые контейнеры (3 из 49). Остальные GET-эндпоинты (`/_ping`, `/version`, `/images/json`) пропускаются без фильтрации.
 
 **Текущий scope:** `ALLOWED_LABELS=docker-guard.allow`, `ALLOWED_PREFIXES=` (empty) — агент видит только grocy, grocy-shopping-agent, mail-receipts.
+
+### E2E tests run on test instance (IMPORTANT)
+
+Все E2E тесты запускать **только на тестовом инстансе** (`docker-compose.test.yml`, порт 3100, DB на 5434). Никогда не запускать тесты на production (`paperclip-server`). Тестовая БД: `paperclip_test` на `hw-rnd-ai-crew-paperclip-test-db-1`.
+
+### Test instance auth (IMPORTANT)
+
+Тестовый Paperclip (`docker-compose.test.yml`) работает в `authenticated` режиме:
+- **Secure cookie**: `__Secure-better-auth.session_token` имеет `Secure` флаг — браузер (и httpx cookie jar) НЕ отправляет его по HTTP. Решение: вручную выставлять `Cookie` заголовок в каждом запросе
+- **Origin check**: mutation-запросы (PATCH/PUT/DELETE) требуют `Origin` заголовок — без него 403 "Board mutation requires trusted browser origin"
+- **Duplicate user bug**: better-auth создаёт нового user при каждом `sign-in/email` если пользователь ещё не существует. Если seed SQL создал пользователя раньше — получится два user с одним email. Seed SQL (`seed_skills_e2e.sql`) теперь_grants membership для всех пользователей с `test@test.com`
+- **API tests**: `e2e/test_skills_api.py` использует `httpx` (не Playwright) с ручным Cookie+Origin — avoids asyncio event loop conflict с Playwright sync API
+
+### deleteBySource NULL sourceLocator bug
+
+`deleteBySource(companyId, sourceType, sourceLocator)` в `company-skills.ts` использует `eq(companySkills.sourceLocator, sourceLocator)`. Для catalog/hermes_bundled навыков `source_locator=NULL` в БД. SQL `= ''` не матчит NULL — нужно `IS NULL`. Patched route validation to only require `sourceType` (not `sourceLocator`), but the service-level query still can't match NULL locators. Workaround: delete by `local_path` source type (which has non-null locators).
+
+### hidden-sources DB schema missing
+
+`companies.hidden_sources` column exists in PostgreSQL but NOT in drizzle schema (`companies.ts`). Routes `GET/PUT /hidden-sources` fail with drizzle errors (`query.getSQL is not a function`, `Cannot convert undefined or null to object`). Fix in test container: patch routes to use drizzle `sql` template literals for raw SQL. Patch in `e2e/patch_test.sh` step 4b (applied after esbuild rebuild).

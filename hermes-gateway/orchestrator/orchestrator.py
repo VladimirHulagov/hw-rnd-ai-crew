@@ -27,6 +27,8 @@ from port_manager import PortManager
 from outline_user import ensure_outline_user
 from supervisor_client import SupervisorClient
 from skill_importer import import_hermes_skills, get_skill_info
+from skill_scanner import scan_agent_profiles, upsert_agent_created_skills, load_scanner_state, save_scanner_state
+from skill_git_sync import SkillGitSync
 
 
 _AGENT_API_KEYS_PATH = Path(__file__).parent / "agent_api_keys.json"
@@ -295,6 +297,9 @@ class Orchestrator:
         self._instructions_hashes: dict[str, dict] = {}
         self._skills_imported = False
         self.db_conn = psycopg2.connect(DATABASE_URL)
+        self._scanner_state_path = self.profiles_root / "skill-scanner-state.json"
+        self._scanner_state = load_scanner_state(self._scanner_state_path)
+        self._git_syncs: dict[str, SkillGitSync] = {}
 
     def _profile_dir(self, agent_id: str) -> Path:
         return self.profiles_root / agent_id
@@ -402,6 +407,132 @@ class Orchestrator:
             elif info.get("markdown"):
                 target.mkdir(parents=True, exist_ok=True)
                 (target / "SKILL.md").write_text(info["markdown"])
+
+    def _sync_agent_created_skills(self, agents: list[dict]):
+        try:
+            known_agents = {}
+            for agent in agents:
+                aid = agent.get("id", "")
+                if aid:
+                    known_agents[aid] = {
+                        "name": agent.get("name", "Unknown"),
+                        "companyId": agent.get("companyId", agent.get("company_id", "")),
+                    }
+
+            bundled_slugs = set()
+            from skill_importer import scan_skill_dirs
+            for s in scan_skill_dirs():
+                bundled_slugs.add(s["slug"])
+
+            discovered = scan_agent_profiles(
+                self.profiles_root,
+                known_agents,
+                bundled_slugs,
+                self._scanner_state,
+            )
+
+            if not discovered:
+                return
+
+            by_company: dict[str, list[dict]] = {}
+            for skill in discovered:
+                cid = skill.get("company_id", "")
+                if cid:
+                    by_company.setdefault(cid, []).append(skill)
+
+            try:
+                conn = psycopg2.connect(DATABASE_URL)
+                for cid, skills in by_company.items():
+                    n = upsert_agent_created_skills(conn, cid, skills)
+                    logger.info("Agent skill scan: %d skills upserted for company %s", n, cid[:8])
+                conn.close()
+            except Exception as exc:
+                logger.error("Failed to upsert agent skills: %s", exc)
+
+            for skill in discovered:
+                if skill.get("state_key") and skill.get("mtime_hash"):
+                    self._scanner_state[skill["state_key"]] = skill["mtime_hash"]
+            save_scanner_state(self._scanner_state_path, self._scanner_state)
+
+        except Exception as exc:
+            logger.error("Agent skill scan failed: %s", exc)
+
+    def _init_git_sync(self):
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, company_id, repo_url, ref, sync_path, sync_token, sync_author,
+                           source_kind, source_locator
+                    FROM skill_sources
+                    WHERE repo_url IS NOT NULL AND repo_url != ''
+                """)
+                rows = cur.fetchall()
+            conn.close()
+            seen = set()
+            for source_id, company_id, repo_url, ref, sync_path, sync_token, sync_author, source_kind, source_locator in rows:
+                seen.add(source_id)
+                if source_id in self._git_syncs:
+                    continue
+                try:
+                    self._git_syncs[source_id] = SkillGitSync(
+                        source_id=source_id,
+                        repo_url=repo_url,
+                        branch=ref or "main",
+                        path=sync_path or "skills/",
+                        token=sync_token or os.environ.get("SKILLS_SYNC_TOKEN", ""),
+                        author=sync_author or "Orchestrator <orchestrator@hermes>",
+                        source_kind=source_kind or "",
+                        source_locator=source_locator,
+                    )
+                    safe_url = repo_url.split("@")[-1] if "@" in repo_url else repo_url
+                    logger.info("Git sync initialized for source %s (%s)", source_id[:8], safe_url)
+                except Exception as exc:
+                    logger.error("Failed to init git sync for source %s: %s", source_id[:8], exc)
+            for stale_id in list(self._git_syncs.keys()):
+                if stale_id not in seen:
+                    del self._git_syncs[stale_id]
+        except Exception as exc:
+            logger.error("Failed to init git sync: %s", exc)
+
+    def _git_sync_cycle(self):
+        if not self._git_syncs:
+            return
+        conn = None
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            for source_id, sync in self._git_syncs.items():
+                try:
+                    if sync.source_kind == "agent" and sync.source_locator:
+                        with conn.cursor() as cur:
+                            cur.execute("SELECT company_id FROM agents WHERE id = %s", (sync.source_locator,))
+                            row = cur.fetchone()
+                        if not row:
+                            continue
+                        push_result = sync.push_skills(conn, row[0])
+                        if not push_result.get("skipped"):
+                            logger.info("Git push [%s]: %s", source_id[:8], push_result)
+                        pull_result = sync.pull_skills(conn, row[0])
+                        if pull_result.get("imported") or pull_result.get("updated") or pull_result.get("removed"):
+                            logger.info("Git pull [%s]: %s", source_id[:8], pull_result)
+                    else:
+                        with conn.cursor() as cur:
+                            cur.execute("SELECT id FROM companies")
+                            company_ids = [r[0] for r in cur.fetchall()]
+                        for company_id in company_ids:
+                            pull_result = sync.pull_skills(conn, company_id)
+                            if pull_result.get("imported") or pull_result.get("removed"):
+                                logger.info("Git pull [%s] company %s: %s", source_id[:8], company_id[:8], pull_result)
+                        push_result = sync.push_skills(conn, "")
+                        if not push_result.get("skipped"):
+                            logger.info("Git push [%s]: %s", source_id[:8], push_result)
+                except Exception as exc:
+                    logger.error("Git sync failed for source %s: %s", source_id[:8], exc)
+        except Exception as exc:
+            logger.error("Git sync cycle failed: %s", exc)
+        finally:
+            if conn:
+                conn.close()
 
     async def _restart_agent(self, agent_id: str, agent: dict):
         proc_name = self._gateway_name(agent_id)
@@ -585,6 +716,11 @@ class Orchestrator:
                 logger.info("Cleaned up stale port for agent %s", agent_id[:8])
 
         _write_ports_json(self.port_manager.get_all())
+
+        self._sync_agent_created_skills(agents)
+
+        self._init_git_sync()
+        self._git_sync_cycle()
 
     async def run(self):
         logger.info("Orchestrator starting...")

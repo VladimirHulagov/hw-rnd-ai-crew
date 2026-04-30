@@ -116,6 +116,7 @@ services:
       TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
       TELEGRAM_ALLOWED_USERS: "${TELEGRAM_ALLOWED_USERS:-}"
       GLM_API_KEY: "${GLM_API_KEY:-}"
+      ZAI_API_KEY: "${ZAI_API_KEY:-}"
       GLM_BASE_URL: "${GLM_BASE_URL:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       FAL_KEY: "${FAL_KEY:-}"
@@ -132,6 +133,7 @@ services:
       OUTLINE_API_KEY: "${OUTLINE_API_KEY:-}"
       OUTLINE_DB_URL: "${OUTLINE_DB_URL:-}"
       TEAM_SKILLS_API_KEY: "${TEAM_SKILLS_API_KEY:-}"
+      SKILLS_SYNC_TOKEN: "${SKILLS_SYNC_TOKEN:-}"
     volumes:
       - hermes_instances:/paperclip/hermes-instances
       - paperclip_data:/paperclip:ro
@@ -142,6 +144,7 @@ services:
       - ./hermes-shared-config:/opt/hermes-shared-config:ro
       - ./hermes-gateway/skills:/opt/skills:ro
       - ./hermes-gateway/orchestrator/agent_api_keys.json:/opt/orchestrator/agent_api_keys.json:ro
+      - /mnt/services/suckless-shopping:/mnt/services/suckless-shopping
       - gateway_ports:/run/gateway-ports
     networks:
       - local-ai-internal
@@ -184,6 +187,7 @@ services:
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET}"
       PAPERCLIP_AGENT_JWT_SECRET: "${BETTER_AUTH_SECRET}"
       GLM_API_KEY: "${GLM_API_KEY:-}"
+      ZAI_API_KEY: "${ZAI_API_KEY:-}"
       GLM_BASE_URL: "${GLM_BASE_URL:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       FAL_KEY: "${FAL_KEY:-}"
@@ -202,6 +206,7 @@ services:
       PAPERCLIP_ALLOWED_ATTACHMENT_TYPES: "*"
       HERMES_GATEWAY_TEAM_SKILLS_URL: "http://hermes-gateway:8681"
       TEAM_SKILLS_API_KEY: "${TEAM_SKILLS_API_KEY:-}"
+      SKILLS_SYNC_TOKEN: "${SKILLS_SYNC_TOKEN:-}"
     volumes:
       - paperclip_data:/paperclip
       - /mnt/services/gladiator/agents:/mnt/services/gladiator/agents
@@ -218,6 +223,8 @@ services:
       - ./hermes-paperclip-adapter/dist/server/test.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/test.js:ro
       - ./hermes-paperclip-adapter/dist/server/execute.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/execute.js:ro
       - ./paperclip/ui/dist:/app/ui/dist
+      - ./patches/company-skills.js:/app/server/dist/routes/company-skills.js:ro
+      - ./patches/company-skills-service.js:/app/server/dist/services/company-skills.js:ro
       - gateway_ports:/run/gateway-ports:ro
       - ./paperclip/packages/shared/src/validators/issue.ts:/opt/paperclip-patches/shared-validators-issue.ts:ro
       - ./paperclip/packages/shared/src/types/issue.ts:/opt/paperclip-patches/shared-types-issue.ts:ro

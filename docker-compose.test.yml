@@ -26,7 +26,9 @@ services:
       PORT: "3100"
       HOST: "127.0.0.1"
       SERVE_UI: "true"
-      PAPERCLIP_DEPLOYMENT_MODE: "local_trusted"
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      PAPERCLIP_ALLOWED_HOSTNAMES: "localhost,127.0.0.1"
       PAPERCLIP_INSTANCE_ID: "test"
       PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
       BETTER_AUTH_SECRET: "test-secret-key-for-e2e-tests-not-production"
@@ -38,6 +40,8 @@ services:
       - ./hermes-paperclip-adapter/dist/server/models.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/models.js:ro
       - ./hermes-paperclip-adapter/dist/server/test.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/test.js:ro
       - ./hermes-paperclip-adapter/dist/server/execute.js:/app/node_modules/.pnpm/hermes-paperclip-adapter@0.2.0/node_modules/hermes-paperclip-adapter/dist/server/execute.js:ro
+      - ./patches/company-skills.js:/app/server/dist/routes/company-skills.js:ro
+      - ./patches/company-skills-service.js:/app/server/dist/services/company-skills.js:ro
       - paperclip_test_data:/paperclip
 
 volumes:
