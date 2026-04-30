@@ -376,11 +376,28 @@ class Orchestrator:
             return
 
         skills_dir = profile_dir / "skills"
+        agent_created = set()
+        with self.db_conn.cursor() as cur:
+            cur.execute("""
+                SELECT metadata->>'category' AS cat, slug
+                FROM company_skills
+                WHERE company_id = %s
+                  AND metadata->>'sourceKind' = 'agent_created'
+                  AND metadata->>'authorAgentId' = %s
+            """, (company_id, agent.get("id", "")))
+            for row in cur.fetchall():
+                if row[0]:
+                    agent_created.add(f"{row[0]}/{row[1]}")
+
         if skills_dir.exists():
             for item in list(skills_dir.rglob("*")):
-                if item.is_symlink():
+                if item.is_file() and not item.is_symlink():
+                    rel = item.parent.relative_to(skills_dir)
+                    key = f"{rel.parent.name}/{rel.name}" if rel.parts else ""
+                    if key in agent_created:
+                        continue
                     item.unlink()
-                elif item.is_file():
+                elif item.is_symlink():
                     item.unlink()
             for cat_dir in list(skills_dir.iterdir()):
                 if cat_dir.is_dir() and not any(cat_dir.iterdir()):
@@ -407,6 +424,26 @@ class Orchestrator:
             elif info.get("markdown"):
                 target.mkdir(parents=True, exist_ok=True)
                 (target / "SKILL.md").write_text(info["markdown"])
+
+        for cat_slug in agent_created:
+            parts = cat_slug.split("/", 1)
+            if len(parts) != 2:
+                continue
+            category, slug = parts
+            target = skills_dir / category / slug
+            if (target / "SKILL.md").exists():
+                continue
+            with self.db_conn.cursor() as cur:
+                cur.execute("""
+                    SELECT markdown FROM company_skills
+                    WHERE company_id = %s AND slug = %s
+                      AND metadata->>'sourceKind' = 'agent_created'
+                      AND metadata->>'authorAgentId' = %s
+                """, (company_id, slug, agent.get("id", "")))
+                row = cur.fetchone()
+            if row and row[0]:
+                target.mkdir(parents=True, exist_ok=True)
+                (target / "SKILL.md").write_text(row[0], encoding="utf-8")
 
     def _sync_agent_created_skills(self, agents: list[dict]):
         try:
