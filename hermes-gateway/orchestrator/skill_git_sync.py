@@ -87,6 +87,8 @@ class SkillGitSync:
                 return False
         return True
 
+    PROFILES_DIR = Path("/root/.hermes/profiles")
+
     def push_skills(self, conn, company_id: str) -> dict:
         result = {"pushed": 0, "removed": 0, "skipped": False}
         if not self.repo_url:
@@ -130,6 +132,22 @@ class SkillGitSync:
             skill_path.mkdir(parents=True, exist_ok=True)
             skill_file = skill_path / "SKILL.md"
             skill_file.write_text(markdown or "", encoding="utf-8")
+
+            if self.source_kind == "agent" and self.source_locator:
+                profile_skill = self.PROFILES_DIR / self.source_locator / "skills" / category / slug
+                if profile_skill.is_dir():
+                    for src_file in profile_skill.rglob("*"):
+                        if not src_file.is_file():
+                            continue
+                        if src_file.name == "SKILL.md":
+                            continue
+                        rel = src_file.relative_to(profile_skill)
+                        if any(p == "__pycache__" for p in rel.parts):
+                            continue
+                        dst = skill_path / rel
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src_file, dst)
+
             result["pushed"] += 1
 
         if skills_dir.is_dir():
