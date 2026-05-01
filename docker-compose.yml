@@ -43,10 +43,17 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      NEXTCLOUD_URL: "${NEXTCLOUD_URL:-}"
+      NEXTCLOUD_USER: "${NEXTCLOUD_USER:-}"
+      NEXTCLOUD_APP_PASSWORD: "${NEXTCLOUD_APP_PASSWORD:-}"
+      NEXTCLOUD_SYNC_INTERVAL: "${NEXTCLOUD_SYNC_INTERVAL:-600}"
+      LOCAL_DATASHEETS_DIR: "/datasheets"
       OUTLINE_URL: "${OUTLINE_URL:-}"
       OUTLINE_API_KEY: "${OUTLINE_API_KEY:-}"
       OUTLINE_SYNC_INTERVAL: "${OUTLINE_SYNC_INTERVAL:-300}"
       OUTLINE_QDRANT_COLLECTION: "${OUTLINE_QDRANT_COLLECTION:-outline_docs}"
+    volumes:
+      - ./datasheets:/datasheets:ro
     networks:
       - local-ai-internal
       - nextcloud-rag
