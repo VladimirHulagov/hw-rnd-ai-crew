@@ -59,7 +59,8 @@ class SkillGitSync:
             result = self._git("pull", "--rebase")
             if result.returncode != 0:
                 logger.warning("git pull failed: %s", result.stderr)
-                return False
+                shutil.rmtree(self._repo_dir, ignore_errors=True)
+                return self._ensure_repo()
             return True
         self._repo_dir.parent.mkdir(parents=True, exist_ok=True)
         result = self._git(
