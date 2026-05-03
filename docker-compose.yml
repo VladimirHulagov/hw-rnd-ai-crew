@@ -122,8 +122,10 @@ services:
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
       TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
       TELEGRAM_ALLOWED_USERS: "${TELEGRAM_ALLOWED_USERS:-}"
+      # zai provider keys (credential pool rotates on quota exhaustion)
       GLM_API_KEY: "${GLM_API_KEY:-}"
       ZAI_API_KEY: "${ZAI_API_KEY:-}"
+      Z_AI_API_KEY: "${Z_AI_API_KEY:-}"
       GLM_BASE_URL: "${GLM_BASE_URL:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       FAL_KEY: "${FAL_KEY:-}"
@@ -193,8 +195,10 @@ services:
       PAPERCLIP_PUBLIC_URL: "https://${PAPERCLIP_SUB_DOMAIN:-paperclip}.${SERVER_DOMAIN}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET}"
       PAPERCLIP_AGENT_JWT_SECRET: "${BETTER_AUTH_SECRET}"
+      # zai provider keys (credential pool rotates on quota exhaustion)
       GLM_API_KEY: "${GLM_API_KEY:-}"
       ZAI_API_KEY: "${ZAI_API_KEY:-}"
+      Z_AI_API_KEY: "${Z_AI_API_KEY:-}"
       GLM_BASE_URL: "${GLM_BASE_URL:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       FAL_KEY: "${FAL_KEY:-}"
@@ -232,10 +236,10 @@ services:
       - ./paperclip/ui/dist:/app/ui/dist
       - ./patches/company-skills.js:/app/server/dist/routes/company-skills.js:ro
       - ./patches/company-skills-service.js:/app/server/dist/services/company-skills.js:ro
+      - ./paperclip/ui/src:/app/ui/src:ro
       - gateway_ports:/run/gateway-ports:ro
-      - ./paperclip/packages/shared/src/validators/issue.ts:/opt/paperclip-patches/shared-validators-issue.ts:ro
-      - ./paperclip/packages/shared/src/types/issue.ts:/opt/paperclip-patches/shared-types-issue.ts:ro
-      - ./paperclip/packages/db/src/schema/issues.ts:/opt/paperclip-patches/db-schema-issues.ts:ro
+      - ./paperclip/packages/shared/src:/app/packages/shared/src:ro
+      - ./paperclip/packages/db/src:/app/packages/db/src:ro
     networks:
       - local-ai-internal
       - traefik
