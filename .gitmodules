@@ -1,9 +1,6 @@
 [submodule "hermes-agent"]
 	path = hermes-agent
 	url = https://github.com/VladimirHulagov/hermes-agent.git
-[submodule "paperclip"]
-	path = paperclip
-	url = https://github.com/VladimirHulagov/paperclip.git
 [submodule "hermes-paperclip-adapter"]
 	path = hermes-paperclip-adapter
 	url = https://github.com/VladimirHulagov/hermes-paperclip-adapter.git
@@ -22,3 +19,6 @@
 [submodule "docker-guard"]
 	path = docker-guard
 	url = https://github.com/VladimirHulagov/docker-guard.git
+[submodule "paperclip"]
+	path = paperclip
+	url = https://github.com/VladimirHulagov/paperclip.git
