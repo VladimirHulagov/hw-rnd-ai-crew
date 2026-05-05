@@ -69,7 +69,7 @@ services:
       - traefik
     labels:
       traefik.enable: true
-      traefik.http.routers.rag-mcp.rule: Host(`${SUB_DOMAIN}.${SERVER_DOMAIN}`)
+      traefik.http.routers.rag-mcp.rule: Host(`rag-mcp.paperclip.example.com`)
       traefik.http.routers.rag-mcp.entrypoints: websecure
       traefik.http.routers.rag-mcp.tls: true
       traefik.http.services.rag-mcp.loadbalancer.server.port: 8081
@@ -85,7 +85,7 @@ services:
       - traefik
     labels:
       traefik.enable: true
-      traefik.http.routers.paperclip-mcp.rule: Host(`mcp.${SERVER_DOMAIN}`)
+      traefik.http.routers.paperclip-mcp.rule: Host(`mcp.paperclip.example.com`)
       traefik.http.routers.paperclip-mcp.entrypoints: websecure
       traefik.http.routers.paperclip-mcp.tls: true
       traefik.http.services.paperclip-mcp.loadbalancer.server.port: 8082
