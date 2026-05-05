@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-operator
+  namespace: agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-operator
+  template:
+    metadata:
+      labels:
+        app: agent-operator
+    spec:
+      serviceAccountName: agent-operator
+      containers:
+        - name: operator
+          image: agent-operator:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DATABASE_URL
+              value: "postgres://paperclip:paperclip@<DB_HOST>:5432/paperclip"
+            - name: K8S_NAMESPACE
+              value: "agents"
+            - name: AGENT_IMAGE
+              value: "hermes-agent-remote:latest"
+            - name: PAPERCLIP_API_URL
+              value: "https://paperclip.example.com/api"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-operator
+  namespace: agents
+spec:
+  selector:
+    app: agent-operator
+  ports:
+    - port: 8080
+      targetPort: 8080
