@@ -537,7 +537,23 @@ HW RND AI Crew is a Docker Compose stack providing RAG over Nextcloud files, Pap
 - Адаптер: HTTP POST к `http://hermes-gateway:<port>/v1/runs` (structured event streaming)
 - `hermes-paperclip-adapter` submodule — bind-mounted в контейнер paperclip-server (ro), пересборка: `docker exec ... esbuild` в контейнере paperclip-server
 - Hot-reload: hash fingerprint (config-template.yaml + orchestrator.py + config_generator.py) — при изменении исходников оркестратор перезапускает агентов автоматически
-- **Инструкции агентов**: источник истины — Paperclip UI (`/agents/<slug>/instructions`), managed bundle на диске paperclip-server. Оркестратор монтирует `paperclip_data` (ro) и при provisioning'е читает `<instanceRoot>/companies/<companyId>/agents/<agentId>/instructions/AGENTS.md` → пишет в `SOUL.md` профиля hermes. Fallback — минимальная заглушка из `_build_soul_md()`.
+ - **Инструкции агентов**: источник истины — Paperclip UI (`/agents/<slug>/instructions`), managed bundle на диске paperclip-server. Оркестратор монтирует `paperclip_data` (ro) и при provisioning'е читает `<instanceRoot>/companies/<companyId>/agents/<agentId>/instructions/AGENTS.md` → пишет в `SOUL.md` профиля hermes. Fallback — минимальная заглушка из `_build_soul_md()`.
+
+### Hermes Remote (K8s)
+
+Agents with `adapter_type=hermes_remote` run on remote Kubernetes clusters as individual Pods.
+
+- **Adapter**: `paperclip/server/src/adapters/hermes_remote/` — creates k8s Deployment, Service, ConfigMap, Secret via k8s API
+- **Agent image**: `hermes-agent-image/` — lightweight container with hermes-agent + api_server.py
+- **Operator**: `agent-operator/` — Python FastAPI service that polls Paperclip DB and reconciles k8s resources
+- **MCP over HTTPS**: Traefik exposes paperclip-mcp, rag-mcp, memory-mcp via public HTTPS URLs
+- **Auth**: Permanent `pcp_*` API keys (same as hermes_local)
+- **Config**: `adapter_config` stores k8s connection details, MCP endpoints, provider keys
+- **K8s manifests**: `k8s/` — namespace, RBAC, operator deployment, network policy
+
+**Migration**: Change agent's `adapter_type` from `hermes_local` to `hermes_remote` and set `adapter_config` with k8s connection details. No downtime for existing agents.
+
+**Build**: `docker build -t hermes-agent-remote:latest -f hermes-agent-image/Dockerfile .` and `docker build -t agent-operator:latest agent-operator/`
 
 ### Agent Auth flow (permanent API keys)
 
