@@ -4,56 +4,156 @@ Infrastructure for the AI crew: RAG pipeline over Nextcloud files, Paperclip ser
 
 ## Architecture
 
+### Service Topology
+
 ```
-                        ┌─────────────┐
-                        │   Traefik   │
-                        │  (reverse   │
-                        │   proxy)    │
-                        └──────┬──────┘
-                               │
-              ┌────────────────┼────────────────┐
-              │                │                │
-     ┌────────┴────────┐  ┌───┴───┐  ┌─────────┴─────────┐
-      │  rag.example.com│  │ paper│  │nextcloud.example. │
-      │   rag-mcp:8081  │  │ clip │  │   (nginx+fpm)     │
-     └────────┬────────┘  └───┬───┘  └─────────┬─────────┘
-              │                │                │
-     ┌────────┴────────┐  ┌───┴────┐           │ webhooks
-     │   rag-worker     │  │ paper- │           │ (cron/5min)
-     │   :8080          │  │ clip-db│           │
-     └──┬─────┬────────┘  └────────┘           │
-        │     │                                  │
-   ┌────┴──┐  │         nextcloud-rag network ◄──┘
-   │Qdrant │  │
-   │ :6333 │  │
-   └───────┘  │
-         ┌────┴─────┐
-         │  Ollama   │
-         │  :11434   │
-         └──────────┘
+                                 ┌──────────────────────┐
+                                 │       INTERNET        │
+                                 │  Users / Telegram /   │
+                                 │  LLM Providers (API)  │
+                                 └──────────┬───────────┘
+                                            │
+                              ┌─────────────┴──────────────┐
+                              │        Traefik             │
+                              │    (TLS termination,       │
+                              │     reverse proxy)         │
+                              │    network: traefik-public │
+                              └──┬──────────┬──────────┬───┘
+                    paperclip.*  │          │          │  rag.*
+                                 │          │          │
+           ┌──────────────────────┘          │          └───────────────────────┐
+           ▼                                 ▼                                  ▼
+┌─────────────────────┐          ┌──────────────────┐              ┌───────────────────┐
+│  paperclip-server   │          │     rag-mcp      │              │   paperclip-mcp   │
+│     (:3100)         │          │     (:8081)      │              │     (:8082)       │
+│                     │          │                  │              │                   │
+│ ┌─────────────────┐ │          │ MCP tools:       │              │ MCP tools:        │
+│ │ REST API        │ │          │ • search_nextcloud│              │ • paperclip_list_* │
+│ │ (auth, CRUD,    │ │          │ • search_outline │              │ • paperclip_set_*  │
+│ │  heartbeat,     │ │          │ • list_outline_* │              │ • paperclip_update*│
+│ │  budgets,       │ │          │                  │              │   (23 tools)      │
+│ │  skills)        │ │          └────────┬─────────┘              └────────┬──────────┘
+│ └─────────────────┘ │                   │                                 │
+│ ┌─────────────────┐ │                   ▼                                 │
+│ │ UI (Vite SPA)   │ │          ┌──────────────────┐                       │
+│ │ (React)         │ │          │      Qdrant      │                       │
+│ └─────────────────┘ │          │   (:6333/6334)   │                       │
+│ ┌─────────────────┐ │          └──────────────────┘                       │
+│ │ Heartbeat Svc   │ │                                                     │
+│ │ (cron → runs)   │ │                                                     │
+│ └────────┬────────┘ │                                                     │
+└──────────┼──────────┘                                                     │
+           │                                                                │
+           │  POST /v1/runs (SSE)     ┌────────────────────────┐           │
+           │  (heartbeat_run_id +     │    hermes-gateway      │           │
+           │   pcp_* API key)         │   (Supervisor PID 1)   │           │
+           │                     ┌───►│                        │           │
+           └─────────────────────┼───►│ orchestrator.py        │           │
+                                 │    │ gateway × N (api_server)│           │
+                                 │    │ session_indexer.py      │           │
+                                 │    │ memory_mcp_server       │           │
+                                 │    │ rag-worker              │           │
+                                 │    └────────────────────────┘           │
+           │                                                            │
+           ▼  ▼                                                         │
+┌──────────────────┐    ┌──────────────┐    ┌──────────────────┐        │
+│  paperclip-db    │    │    Ollama     │    │  docker-guard    │        │
+│  PostgreSQL 17   │    │   (:11434)   │    │    (:2375)       │        │
+│  (:5432)         │    └──────────────┘    └──────────────────┘        │
+└──────────────────┘                                                    │
+                                                                        │
+┌─── External integrations ─────────────────────────────────────────┐   │
+│  Telegram (per-agent bots) · GitHub (skill git sync)              │   │
+│  LLM Providers: GLM, ZAI, Gemini, OpenRouter                      │   │
+└───────────────────────────────────────────────────────────────────┘   │
+                                                                        │
+┌─── Shared Docker Volumes ─────────────────────────────────────────┐   │
+│  paperclip_pgdata · paperclip_data · hermes_profiles               │   │
+│  hermes_venv · hermes_src · gateway_ports · qdrant_data · ollama_data│   │
+└────────────────────────────────────────────────────────────────────┘   │
+```
+
+### Heartbeat Run Flow
+
+```
+ 1. paperclip-server ── heartbeat cron ──► create heartbeat_run in DB
+         │
+         │ 2. Adapter invocation (in-process)
+         ▼
+    hermes-paperclip-adapter (execute.ts)
+    • buildInputMessage() → ~400 chars task prompt
+    • Read ports.json → agent gateway port
+    • POST /v1/runs (SSE) ─────────────────────────┐
+                                                    │
+         3. Agent execution                         │
+         ┌──────────────────────────────────────────┘
+         ▼
+    hermes-gateway / api_server.py (:8642+)
+    • Validate pcp_* key
+    • Set HEARTBEAT_RUN_ID
+    • AIAgent.run_conversation()
+      → LLM API call → tool_use loop → text-only retry (×2)
+         │
+         │ 4. MCP tool calls (during agent loop)
+         ├────► paperclip-mcp ──► paperclip-server API
+         ├────► rag-mcp ──► Qdrant (semantic search)
+         ├────► Outline MCP ──► Outline API
+         ├────► memory MCP (:8680) ──► Qdrant
+         ├────► nextcloud-mcp ──► Nextcloud WebDAV
+         └────► docker-guard ──► Docker daemon
+
+         5. Result ◄─────────────────────────────────
+    adapter: Parse SSE stream → return resultJson: { summary }
+         │
+         ▼
+    paperclip-server: write result_json → create issue comment → release lock
+```
+
+### Hermes Remote K8s
+
+```
+ Main Host (Docker Compose)                Kubernetes Cluster
+ ┌──────────────────────────────┐         ┌────────────────────────────┐
+ │  paperclip-server            │         │  agent-operator            │
+ │  ├── hermes_local adapter    │  HTTPS  │  (poll DB → CRUD Pods)    │
+ │  └── hermes_remote adapter ──┼────────►│                            │
+ │       ├── k8s provisioner    │         │  ┌────────┐ ┌────────┐    │
+ │       └── SSE executor       │         │  │agent-A │ │agent-B │    │
+ │                              │         │  │ (Pod)  │ │ (Pod)  │    │
+ │  Traefik (MCP via HTTPS)     │◄────────│  │:8642   │ │:8642   │    │
+ │  ├── mcp.paperclip.*         │  MCP    │  └────────┘ └────────┘    │
+ │  ├── rag-mcp.*               │  HTTPS  │                            │
+ │  └── memory.*                │         │  k8s/ manifests:           │
+ └──────────────────────────────┘         │  namespace · rbac · netpol │
+                                           └────────────────────────────┘
 ```
 
 ## Services
 
 | Service | Port | Description |
 |---------|------|-------------|
-| **rag-worker** | 8080 | FastAPI webhook receiver. Downloads files from Nextcloud via WebDAV, parses (PDF, txt, md, csv), chunks, embeds (BGE-large-en-v1.5), stores in Qdrant |
-| **rag-mcp** | 8081 | MCP server exposing `search_library`, `list_indexed_files`, `get_file_status`. SSE (`/sse`) + Streamable HTTP (`/mcp`) transports with Bearer auth |
-| **qdrant** | 6333 | Vector database for indexed document chunks |
-| **ollama** | 11434 | Local LLM runtime |
-| **paperclip-server** | 3100 | Paperclip AI platform |
+| **paperclip-server** | 3100 | Paperclip AI agent control plane (REST API, heartbeat, skills, budgets) |
 | **paperclip-db** | 5432 | PostgreSQL 17 for Paperclip |
+| **hermes-gateway** | 8642-8673 | Hermes agent runtime (Supervisor PID 1, N gateway processes) |
+| **paperclip-mcp** | 8082 | MCP server: 23 Paperclip tools (list/set/update issues, skills, checklist) |
+| **rag-mcp** | 8081 | MCP server: search_nextcloud, search_outline, list tools |
+| **rag-worker** | 8080 | FastAPI indexer: Outline (300s) + Nextcloud (600s) sync → Qdrant |
+| **qdrant** | 6333 | Vector database (outline_docs, agent_memory, nextcloud_* collections) |
+| **ollama** | 11434 | Local LLM (nomic-embed-text 768d, llama3, qwen) |
+| **docker-guard** | 2375 | Docker API proxy (filtered GET, blocked write) |
 
 ## Submodules
 
 | Submodule | Repo | Description |
 |-----------|------|-------------|
-| `rag-worker/` | [VladimirHulagov/rag-worker](https://github.com/VladimirHulagov/rag-worker) | File indexer: parsers, chunker, embedder, Qdrant client, FastAPI webhook handler |
-| `rag-mcp/` | [VladimirHulagov/rag-mcp](https://github.com/VladimirHulagov/rag-mcp) | MCP server: SSE + Streamable HTTP, Bearer auth, semantic search tools |
-| `hermes-agent/` | [VladimirHulagov/hermes-agent](https://github.com/VladimirHulagov/hermes-agent) | Hermes AI agent (MCP client for RAG) |
-| `paperclip/` | [VladimirHulagov/paperclip](https://github.com/VladimirHulagov/paperclip) | Paperclip platform |
-| `hermes-paperclip-adapter/` | [VladimirHulagov/hermes-paperclip-adapter](https://github.com/VladimirHulagov/hermes-paperclip-adapter) | Hermes-Paperclip adapter |
-| `superpowers/` | [VladimirHulagov/superpowers](https://github.com/VladimirHulagov/superpowers) | Agent skills and superpowers |
+| `paperclip/` | [VladimirHulagov/paperclip](https://github.com/VladimirHulagov/paperclip) | Paperclip platform (server + UI + shared packages) |
+| `hermes-agent/` | [VladimirHulagov/hermes-agent](https://github.com/VladimirHulagov/hermes-agent) | Hermes AI agent (MCP client, 73+ built-in skills) |
+| `hermes-paperclip-adapter/` | [VladimirHulagov/hermes-paperclip-adapter](https://github.com/VladimirHulagov/hermes-paperclip-adapter) | Hermes-Paperclip heartbeat adapter |
+| `paperclip-mcp/` | [VladimirHulagov/paperclip-mcp](https://github.com/VladimirHulagov/paperclip-mcp) | Paperclip MCP server (23 tools) |
+| `rag-worker/` | [VladimirHulagov/rag-worker](https://github.com/VladimirHulagov/rag-worker) | File indexer: Outline + Nextcloud → Qdrant |
+| `rag-mcp/` | [VladimirHulagov/rag-mcp](https://github.com/VladimirHulagov/rag-mcp) | MCP server: semantic search tools |
+| `docker-guard/` | [VladimirHulagov/docker-guard](https://github.com/VladimirHulagov/docker-guard) | Docker API proxy with filtered access |
+| `superpowers/` | [VladimirHulagov/superpowers](https://github.com/VladimirHulagov/superpowers) | Agent skills and development superpowers |
 
 ## Quick Start
 
@@ -93,110 +193,61 @@ docker exec rag-worker python -m rag.index_all
 
 ## RAG Pipeline
 
-### File Flow
+### Indexing Sources
 
-1. File uploaded to Nextcloud (via WebDAV or UI)
-2. Nextcloud webhook fires (NodeCreatedEvent / NodeWrittenEvent / NodeDeletedEvent)
-3. `rag-worker` receives webhook, downloads file via WebDAV
-4. File is parsed (PDF via opendataloader-pdf, plaintext for txt/md/csv)
-5. Text is chunked (512 words, 64 overlap)
-6. Chunks are embedded with BGE-large-en-v1.5 (1024 dim, CPU-only PyTorch)
-7. Vectors upserted to Qdrant
+| Source | Interval | Target Collection | Method |
+|--------|----------|-------------------|--------|
+| Outline (knowledge base) | 300s | `outline_docs` | REST API |
+| Nextcloud (files) | 600s | `nextcloud_*` | WebDAV |
+| Agent sessions + MEMORY.md | 10min | `agent_memory` | File scan |
 
-### Nextcloud Webhook Setup
-
-1. In Nextcloud, go to Settings → Workflow engine (requires `webhook_listeners` app)
-2. Or via OCS API:
-
-```bash
-EVENTS=("NodeCreatedEvent" "NodeWrittenEvent" "NodeDeletedEvent")
-for EVENT in "${EVENTS[@]}"; do
-  curl -X POST \
-    "https://nextcloud.example.com/ocs/v1.php/apps/webhook_listeners/api/v1/webhooks" \
-    -u "user:password" \
-    -H "OCS-APIRequest: true" \
-    -H "Content-Type: application/json" \
-    -d "{
-      \"httpMethod\": \"POST\",
-      \"uri\": \"http://rag-worker:8080/webhook/nextcloud\",
-      \"event\": \"OCP\\\\Files\\\\Events\\\\Node\\\\${EVENT}\",
-      \"authMethod\": \"header\",
-      \"authData\": {\"header\": \"X-Webhook-Secret\", \"value\": \"your-secret\"}
-    }"
-done
-```
-
-3. Allow local remote servers in Nextcloud:
-
-```bash
-docker exec nextcloud php occ config:system:set allow_local_remote_servers --value=true --type=boolean
-```
-
-4. Set up cron for background jobs (webhooks fire via cron):
-
-```bash
-docker exec nextcloud-web crontab -l > /tmp/cron
-echo "*/5 * * * * curl -sf http://localhost/cron.php > /dev/null 2>&1" >> /tmp/cron
-docker exec -i nextcloud-web crontab - < /tmp/cron
-```
+All embeddings use **Ollama nomic-embed-text** (768d, cosine similarity).
 
 ### MCP Tools
 
-The rag-mcp server exposes 3 tools via MCP protocol:
+**rag-mcp** (`https://rag.example.com/mcp`):
 
 | Tool | Description |
 |------|-------------|
-| `search_library` | Semantic search over indexed documents. Returns matching chunks with score, file, page |
-| `list_indexed_files` | List all indexed files with metadata and chunk counts |
-| `get_file_status` | Check if a specific file is indexed and its chunk count |
+| `search_nextcloud` | Semantic search over Nextcloud files |
+| `search_outline` | Semantic search over Outline documents |
+| `list_outline_documents` | List indexed Outline documents |
 
-**Endpoints:**
-- Streamable HTTP: `POST https://rag.example.com/mcp`
-- SSE: `GET https://rag.example.com/sse` + `POST https://rag.example.com/messages/`
+**paperclip-mcp** (`https://mcp.paperclip.example.com/mcp`):
 
-Both require `Authorization: Bearer <token>` header.
+| Tool | Description |
+|------|-------------|
+| `paperclip_list_issues` | List assigned issues |
+| `paperclip_update_issue` | Update issue status, description |
+| `paperclip_set_checklist` | Set task checklist (native, persistent in DB) |
+| `paperclip_checkout_issue` | Checkout issue for work |
+| `paperclip_release_issue` | Release issue lock |
+| + 18 more tools | Comments, skills, budgets, etc. |
 
-### Hermes Integration
+**memory-mcp** (internal `:8680`):
 
-Add to `~/.hermes/config.yaml`:
+| Tool | Description |
+|------|-------------|
+| `search_memory` | Semantic search over agent session history |
+| `get_agent_context` | Get agent context by name |
 
-```yaml
-mcp_servers:
-  rag:
-    url: "https://rag.example.com/mcp"
-    headers:
-      Authorization: "Bearer ${MCP_RAG_API_KEY}"
-    enabled: true
-    timeout: 120
-    connect_timeout: 60
-```
+## Agent Adapters
 
-Add to `~/.hermes/.env`:
-
-```
-MCP_RAG_API_KEY=your-bearer-token
-```
-
-Tools will be available as `mcp_rag_search_library`, `mcp_rag_list_indexed_files`, `mcp_rag_get_file_status`.
-
-## Supported File Types
-
-| Extension | Parser | Notes |
-|-----------|--------|-------|
-| `.pdf` | opendataloader-pdf | Requires JRE in container |
-| `.txt` | Plaintext | |
-| `.md` | Plaintext | |
-| `.rst` | Plaintext | |
-| `.csv` | Plaintext | |
+| Adapter | Description |
+|---------|-------------|
+| `hermes_local` | Agent runs in hermes-gateway container (supervisor process) |
+| `hermes_remote` | Agent runs as k8s Pod on remote cluster (POST /v1/runs via HTTPS) |
+| `http` | Fire-and-forget webhook to external service |
 
 ## Tech Stack
 
-- **Python 3.11** (rag-worker, rag-mcp)
-- **FastAPI + Uvicorn** (rag-worker webhook)
-- **MCP SDK 1.27** (rag-mcp server)
-- **Qdrant** (vector DB)
-- **sentence-transformers** (BGE-large-en-v1.5, 1024 dim)
-- **PyTorch CPU-only** (no GPU required)
-- **Nextcloud 31** (file storage + webhook triggers)
-- **Traefik** (TLS termination, routing)
-- **Docker Compose** (orchestration)
+- **Paperclip** (TypeScript/Node.js) — agent control plane, REST API, Vite SPA
+- **Hermes Agent** (Python) — AI agent with MCP client, 73+ built-in skills
+- **Hermes Gateway** (Python/Supervisor) — orchestrator, N gateway processes, session indexer
+- **FastAPI** (Python) — rag-worker, rag-mcp, paperclip-mcp, memory-mcp
+- **Qdrant** — vector database (768d cosine, nomic-embed-text)
+- **PostgreSQL 17** — Paperclip data (agents, issues, skills, heartbeat_runs)
+- **Ollama** — local LLM (embeddings, optional inference)
+- **Traefik** — TLS termination, reverse proxy, MCP HTTPS endpoints
+- **Docker Compose** — orchestration
+- **Kubernetes** (optional) — remote agent deployment via `hermes_remote` adapter
