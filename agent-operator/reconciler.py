@@ -6,8 +6,8 @@ import time
 import psycopg2
 from kubernetes import client, config as k8s_config
 
-from . import config as cfg
-from .k8s_resources import (
+import config as cfg
+from k8s_resources import (
     agent_resource_name,
     make_config_map,
     make_deployment,
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def _config_hash(data: dict) -> str:
-    return hashlib.md5(json.dumps(data, sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
 class Reconciler:
@@ -67,11 +67,11 @@ class Reconciler:
         except Exception:
             self.k8s_core.create_namespaced_secret(ns, body)
 
-    def _apply_deployment(self, name: str, agent_id: str, image: str, adapter_config: dict):
+    def _apply_deployment(self, name: str, agent_id: str, image: str, adapter_config: dict, config_hash: str):
         ns = cfg.NAMESPACE
         resources = adapter_config.get("resources")
         pull_secret = adapter_config.get("imagePullSecret")
-        body = make_deployment(name, ns, agent_id, image, resources, pull_secret)
+        body = make_deployment(name, ns, agent_id, image, resources, pull_secret, config_hash)
         try:
             self.k8s_apps.patch_namespaced_deployment(name, ns, body)
         except Exception:
@@ -126,12 +126,12 @@ class Reconciler:
             logger.info("Provisioning agent %s (%s)", agent.get("name"), agent_id[:8])
 
             config_data = {
-                "config.yaml": "# managed by operator - populated by adapter on execute",
+                "config.yaml": "# placeholder - adapter will overwrite on first heartbeat execute",
                 "SOUL.md": f"# {agent.get('name', 'Agent')}",
             }
             self._apply_configmap(name, config_data)
             self._apply_secret(name, {"PLACEHOLDER": "true"})
-            self._apply_deployment(name, agent_id, image, adapter_config)
+            self._apply_deployment(name, agent_id, image, adapter_config, current_hash)
             self._apply_service(name, agent_id)
 
             self._agent_hashes[agent_id] = current_hash

@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 WORKDIR /app
-COPY agent-operator/ .
+COPY . .
 RUN pip install --no-cache-dir fastapi uvicorn psycopg2-binary kubernetes
 
 EXPOSE 8080

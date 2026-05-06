@@ -2,7 +2,7 @@ from typing import Dict, Optional
 
 
 def agent_resource_name(agent_id: str) -> str:
-    return f"agent-{agent_id[:8]}"
+    return f"agent-{agent_id}"
 
 
 def make_deployment(
@@ -12,8 +12,12 @@ def make_deployment(
     image: str,
     resources: Optional[Dict] = None,
     image_pull_secret: Optional[str] = None,
+    config_hash: Optional[str] = None,
 ) -> dict:
     res = resources or {"cpu": "1", "memory": "2Gi"}
+    annotations = {}
+    if config_hash:
+        annotations["paperclip/config-hash"] = config_hash
     spec = {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -31,7 +35,8 @@ def make_deployment(
                         "app": "hermes-agent",
                         "agent-id": agent_id,
                         "managed-by": "paperclip-operator",
-                    }
+                    },
+                    "annotations": annotations,
                 },
                 "spec": {
                     "containers": [
