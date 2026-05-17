@@ -631,7 +631,7 @@ Hermes-agent имеет систему навыков (SKILL.md) с progressive 
 - CEO управляет навыками per-agent через UI → Paperclip хранит в `adapter_config.paperclipSkillSync.desiredSkills`
 - Агенты видят только включённые навыки (loaded from profile `skills/` dir)
 - `external_dirs` **удалён** из `config-template.yaml` — навыки загружаются только из профиля
-- **Docker skill** (`hermes-gateway/skills/devops/docker-management/SKILL.md`) — кастомный навык на русском для docker-guard
+- **Docker skill** (`hermes-gateway/skills/devops/docker-management/SKILL.md`) — кастомный навык на русском для docker-guard. Включает: управление контейнерами, деплой новых сервисов, настройку Traefik, управление конфигами
 - Навыки монтируются read-only через `./hermes-gateway/skills:/opt/skills:ro` в docker-compose.yml
 - `queryKeys.ts` в контейнере может быть устаревшим — UI src НЕ bind-mounted. После изменений в `paperclip/ui/src/lib/queryKeys.ts` нужен `docker cp` + vite build + bump `sw.js` CACHE_NAME
 
@@ -755,7 +755,7 @@ Hermes-agent имеет систему навыков (SKILL.md) с progressive 
 - `hermes-gateway/orchestrator/skill_git_sync.py` — `SkillGitSync` bidirectional git push/pull
 - `hermes-gateway/supervisord.conf` — session-indexer + memory-mcp programs
 - `hermes-gateway/config-template.yaml` — agent config template, includes `skills.external_dirs`
-- `hermes-gateway/skills/docker-management/SKILL.md` — custom Docker skill (docker-guard proxy, allowed containers)
+- `hermes-gateway/skills/docker-management/SKILL.md` — custom Docker skill (docker-guard proxy, deploy, Traefik, config management)
 - `hermes-gateway/tests/test_skill_scanner.py` — 18 tests for agent skill discovery
 - `hermes-gateway/tests/test_skill_git_sync.py` — 10 tests for git sync
 - `docker-compose.yml` — ui/dist bind mount, hermes-gateway service, adapter bind mounts, hermes_profiles volume, skills mount
@@ -1039,7 +1039,34 @@ Hermes-agent имеет систему навыков (SKILL.md) с progressive 
 
 **Fix:** Добавлена `_filtered_container_list()` — при `GET /containers/json`.guard запрашивает полный список у Docker, фильтрует по `ALLOWED_LABELS` и `ALLOWED_PREFIXES`, возвращает только разрешённые контейнеры (3 из 49). Остальные GET-эндпоинты (`/_ping`, `/version`, `/images/json`) пропускаются без фильтрации.
 
-**Текущий scope:** `ALLOWED_LABELS=docker-guard.allow`, `ALLOWED_PREFIXES=` (empty) — агент видит только grocy, grocy-shopping-agent, mail-receipts.
+**Текущий scope:** `ALLOWED_LABELS=docker-guard.allow`, `ALLOWED_PREFIXES=` (empty) — агент видит только контейнеры с label.
+
+### docker-guard deploy node
+
+docker-guard работает как deploy-узел — агенты могут деплоить новые сервисы, создавать compose-файлы и настраивать Traefik routing.
+
+**Образ:** `docker:cli` + `python3` + `docker-cli-compose` (Alpine)
+**Маунты:**
+- `/var/run/docker.sock` — rw (для `docker compose up`)
+- `/mnt/services/agent-deploy` — rw (песочница для новых сервисов)
+
+**Песочница agent-deploy:**
+- Агенты создают сервисы **только** в `/mnt/services/agent-deploy/<name>/`
+- Все остальные `/mnt/services/` директории — защищены (не смонтированы в docker-guard)
+- Продвижение сервиса из песочницы (`mv /mnt/services/agent-deploy/<name> /mnt/services/<name>`) — ручная операция
+
+**Рабочий процесс агента:**
+1. `docker exec hw-docker-guard mkdir -p /mnt/services/agent-deploy/<name>`
+2. `docker exec hw-docker-guard sh -c 'cat > .../docker-compose.yml << EOF ... EOF'` — compose с labels `docker-guard.allow` + `traefik.*`
+3. `docker exec hw-docker-guard docker compose -f .../docker-compose.yml up -d`
+4. Traefik автоматически подхватывает контейнер по labels
+
+**DNS:**
+- `*.collaborationism.tech` — wildcard A-запись, резолвится автоматически
+- `*.suckless.space` — wildcard A-запись, резолвится автоматически
+- Wildcard TLS-сертификаты настроены для обоих доменов
+
+**Env var:** `AGENT_DEPLOY_DIR=/mnt/services/agent-deploy` — для будущей path-validation в guard.py
 
 ### E2E tests run on test instance (IMPORTANT)
 
