@@ -18,11 +18,13 @@ services:
     container_name: hw-docker-guard
     restart: unless-stopped
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /mnt/services/agent-deploy:/mnt/services/agent-deploy:rw
     environment:
       ALLOWED_LABELS: "docker-guard.allow"
       ALLOWED_PREFIXES: ""
       LISTEN_PORT: "2375"
+      AGENT_DEPLOY_DIR: "/mnt/services/agent-deploy"
     networks:
       - local-ai-internal
 
@@ -137,6 +139,7 @@ services:
       MCP_OUTLINE_URL: "${MCP_OUTLINE_URL:-}"
       MEMORY_API_KEY: "${MEMORY_API_KEY:-}"
       NEXTCLOUD_MCP_API_KEY: "${NEXTCLOUD_MCP_API_KEY:-}"
+      STOP_WORDS: "${STOP_WORDS:-}"
       PAPERCLIP_DATA_PATH: "/paperclip"
       OUTLINE_URL: "${OUTLINE_URL:-}"
       OUTLINE_API_KEY: "${OUTLINE_API_KEY:-}"
