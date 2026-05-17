@@ -89,6 +89,128 @@ docker logs --since 1h <container> 2>&1 | grep -iE "error|fail|exception"
 docker exec <container> cat /etc/config.conf
 ```
 
+## Деплой новых сервисов
+
+Агент может развёртывать новые сервисы через `docker exec hw-docker-guard`. Все файлы создаются в песочнице `/mnt/services/agent-deploy/<service-name>/`.
+
+### Пошаговый процесс
+
+1. **Создать директорию:**
+```bash
+docker exec hw-docker-guard mkdir -p /mnt/services/agent-deploy/<name>
+```
+
+2. **Написать docker-compose.yml:**
+```bash
+docker exec hw-docker-guard sh -c 'cat > /mnt/services/agent-deploy/<name>/docker-compose.yml << EOF
+services:
+  <name>:
+    image: <image>:<tag>
+    restart: unless-stopped
+    labels:
+      docker-guard.allow: "true"
+      traefik.enable: "true"
+      traefik.http.routers.<name>.rule: "Host(\`<subdomain>.<domain>\`)"
+      traefik.http.routers.<name>.entrypoints: websecure
+      traefik.http.routers.<name>.tls: "true"
+      traefik.http.services.<name>.loadbalancer.server.port: "<port>"
+    networks:
+      - traefik-public
+networks:
+  traefik-public:
+    external: true
+EOF'
+```
+
+3. **Запустить сервис:**
+```bash
+docker exec hw-docker-guard docker compose -f /mnt/services/agent-deploy/<name>/docker-compose.yml up -d
+```
+
+4. **Проверить:**
+```bash
+docker exec hw-docker-guard docker ps --filter "label=docker-guard.allow"
+docker exec hw-docker-guard docker logs <container-name>
+```
+
+### Важные правила
+
+- **Создавай сервисы ТОЛЬКО в `/mnt/services/agent-deploy/`** — не трогай другие директории
+- **Всегда добавляй метку `docker-guard.allow: "true"`** — без неё контейнер неуправляем
+- **Проверяй что DNS резолвится** — `*.collaborationism.tech` имеет wildcard A-запись (автоматически резолвится). `*.suckless.space` wildcard DNS НЕТ — нужна отдельная A-запись (попроси CEO добавить)
+- **Проверяй что порт не занят** — перед деплоем убедись что целевой порт свободен
+
+## Настройка Traefik
+
+Traefik автоматически маршрутизирует трафик к контейнерам с правильными labels. Wildcard-сертификаты уже настроены для `*.suckless.space` и `*.collaborationism.tech`.
+
+### Обязательные labels для публичного доступа
+
+```yaml
+labels:
+  traefik.enable: "true"
+  traefik.http.routers.<router-name>.rule: "Host(\`<subdomain>.<domain>\`)"
+  traefik.http.routers.<router-name>.entrypoints: websecure
+  traefik.http.routers.<router-name>.tls: "true"
+  traefik.http.services.<router-name>.loadbalancer.server.port: "<internal-port>"
+```
+
+### Требования к сети
+
+Контейнер должен быть в сети `traefik-public`:
+
+```yaml
+networks:
+  traefik-public:
+    external: true
+```
+
+### Проверка маршрутизации
+
+```bash
+docker exec hw-docker-guard docker inspect <container> --format '{{json .NetworkSettings.Networks}}'
+curl -sI https://<subdomain>.<domain>
+```
+
+## Управление конфигурациями
+
+### Создать .env файл
+
+```bash
+docker exec hw-docker-guard sh -c 'cat > /mnt/services/agent-deploy/<name>/.env << EOF
+KEY1=value1
+KEY2=value2
+EOF'
+```
+
+### Обновить .env и перезапустить
+
+```bash
+docker exec hw-docker-guard sh -c 'echo "NEW_KEY=value" >> /mnt/services/agent-deploy/<name>/.env'
+docker exec hw-docker-guard docker compose -f /mnt/services/agent-deploy/<name>/docker-compose.yml up -d
+```
+
+### Редактировать config.json
+
+Если конфиг в bind mount внутри agent-deploy:
+
+```bash
+docker exec hw-docker-guard sh -c 'echo "{\"key\": \"value\"}" > /mnt/services/agent-deploy/<name>/config.json'
+```
+
+Если конфиг в named volume — используем временный контейнер:
+
+```bash
+docker exec hw-docker-guard docker run --rm -v <volume-name>:/data alpine sh -c 'echo "{\"key\": \"value\"}" > /data/config.json'
+```
+
+## Удаление сервиса
+
+```bash
+docker exec hw-docker-guard docker compose -f /mnt/services/agent-deploy/<name>/docker-compose.yml down
+docker exec hw-docker-guard rm -rf /mnt/services/agent-deploy/<name>
+```
+
 ## Ограничения
 
 - **Нет interactive exec** — прокси не поддерживает TTY-сессии
