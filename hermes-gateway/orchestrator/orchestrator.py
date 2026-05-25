@@ -300,6 +300,8 @@ class Orchestrator:
         self._scanner_state_path = self.profiles_root / "skill-scanner-state.json"
         self._scanner_state = load_scanner_state(self._scanner_state_path)
         self._git_syncs: dict[str, SkillGitSync] = {}
+        self._last_push_time: dict[str, float] = {}
+        self._push_interval = float(os.environ.get("SKILL_SYNC_PUSH_INTERVAL", "600"))
 
     def _profile_dir(self, agent_id: str) -> Path:
         return self.profiles_root / agent_id
@@ -424,6 +426,13 @@ class Orchestrator:
             elif info.get("markdown"):
                 target.mkdir(parents=True, exist_ok=True)
                 (target / "SKILL.md").write_text(info["markdown"])
+                if info.get("sourceKind") == "git_sync":
+                    source_id = info.get("sourceId", "")
+                    git_sync = self._git_syncs.get(source_id)
+                    if git_sync:
+                        extra = git_sync.copy_extra_files(category, slug, target)
+                        if extra:
+                            logger.info("Copied %d extra files for git_sync skill %s/%s", extra, category, slug)
 
         for cat_slug in agent_created:
             parts = cat_slug.split("/", 1)
@@ -431,19 +440,23 @@ class Orchestrator:
                 continue
             category, slug = parts
             target = skills_dir / category / slug
-            if (target / "SKILL.md").exists():
-                continue
-            with self.db_conn.cursor() as cur:
-                cur.execute("""
-                    SELECT markdown FROM company_skills
-                    WHERE company_id = %s AND slug = %s
-                      AND metadata->>'sourceKind' = 'agent_created'
-                      AND metadata->>'authorAgentId' = %s
-                """, (company_id, slug, agent.get("id", "")))
-                row = cur.fetchone()
-            if row and row[0]:
-                target.mkdir(parents=True, exist_ok=True)
-                (target / "SKILL.md").write_text(row[0], encoding="utf-8")
+            if not (target / "SKILL.md").exists():
+                with self.db_conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT markdown FROM company_skills
+                        WHERE company_id = %s AND slug = %s
+                          AND metadata->>'sourceKind' = 'agent_created'
+                          AND metadata->>'authorAgentId' = %s
+                    """, (company_id, slug, agent.get("id", "")))
+                    row = cur.fetchone()
+                if row and row[0]:
+                    target.mkdir(parents=True, exist_ok=True)
+                    (target / "SKILL.md").write_text(row[0], encoding="utf-8")
+            for git_sync in self._git_syncs.values():
+                extra = git_sync.copy_extra_files(category, slug, target)
+                if extra:
+                    logger.info("Copied %d extra files for agent_created skill %s/%s from git", extra, category, slug)
+                    break
 
     def _sync_agent_created_skills(self, agents: list[dict]):
         try:
@@ -533,11 +546,13 @@ class Orchestrator:
             logger.error("Failed to init git sync: %s", exc)
 
     def _git_sync_cycle(self):
+        import time
         if not self._git_syncs:
             return
         conn = None
         try:
             conn = psycopg2.connect(DATABASE_URL)
+            now = time.monotonic()
             for source_id, sync in self._git_syncs.items():
                 try:
                     if sync.source_kind == "agent" and sync.source_locator:
@@ -546,12 +561,15 @@ class Orchestrator:
                             row = cur.fetchone()
                         if not row:
                             continue
-                        push_result = sync.push_skills(conn, row[0])
-                        if not push_result.get("skipped"):
-                            logger.info("Git push [%s]: %s", source_id[:8], push_result)
                         pull_result = sync.pull_skills(conn, row[0])
                         if pull_result.get("imported") or pull_result.get("updated") or pull_result.get("removed"):
                             logger.info("Git pull [%s]: %s", source_id[:8], pull_result)
+                        last = self._last_push_time.get(source_id, 0)
+                        if now - last >= self._push_interval:
+                            push_result = sync.push_skills(conn, row[0])
+                            if not push_result.get("skipped"):
+                                logger.info("Git push [%s]: %s", source_id[:8], push_result)
+                            self._last_push_time[source_id] = now
                     else:
                         with conn.cursor() as cur:
                             cur.execute("SELECT id FROM companies")
@@ -560,9 +578,12 @@ class Orchestrator:
                             pull_result = sync.pull_skills(conn, company_id)
                             if pull_result.get("imported") or pull_result.get("removed"):
                                 logger.info("Git pull [%s] company %s: %s", source_id[:8], company_id[:8], pull_result)
-                        push_result = sync.push_skills(conn, "")
-                        if not push_result.get("skipped"):
-                            logger.info("Git push [%s]: %s", source_id[:8], push_result)
+                        last = self._last_push_time.get(source_id, 0)
+                        if now - last >= self._push_interval:
+                            push_result = sync.push_skills(conn, "")
+                            if not push_result.get("skipped"):
+                                logger.info("Git push [%s]: %s", source_id[:8], push_result)
+                            self._last_push_time[source_id] = now
                 except Exception as exc:
                     logger.error("Git sync failed for source %s: %s", source_id[:8], exc)
         except Exception as exc:
@@ -758,6 +779,12 @@ class Orchestrator:
 
         self._init_git_sync()
         self._git_sync_cycle()
+
+        for agent in agents:
+            agent_id = agent.get("id", "")
+            if agent_id and agent_id in self._running_agent_ids:
+                profile_dir = self._profile_dir(agent_id)
+                self._sync_agent_skills(agent, profile_dir)
 
     async def run(self):
         logger.info("Orchestrator starting...")
