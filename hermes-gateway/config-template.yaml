@@ -82,7 +82,19 @@ mcp_servers:
     enabled: true
     timeout: 60
     connect_timeout: 30
-_config_version: 11
+  skill-sync:
+    url: http://localhost:8681/mcp
+    headers:
+      Authorization: "Bearer ${skill_sync_api_key}"
+    enabled: true
+    timeout: 120
+    connect_timeout: 30
+_config_version: 13
+stop_words:
+  enabled: true
+  words:
+${stop_words}
+  placeholder: "[FILTERED]"
 security:
   redact_secrets: true
   tirith_enabled: false
