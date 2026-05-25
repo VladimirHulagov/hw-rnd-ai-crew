@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -12,9 +14,12 @@ from skill_importer import _parse_frontmatter
 
 logger = logging.getLogger("gateway-orchestrator")
 
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
+
 
 class SkillGitSync:
-    def __init__(self, source_id: str, repo_url: str, branch: str, path: str, token: str, author: str,
+    def __init__(self, source_id: str = "", repo_url: str = "", branch: str = "main",
+                 path: str = "skills", token: str = "", author: str = "",
                  source_kind: str = "", source_locator: str | None = None):
         self.source_id = source_id
         self.source_kind = source_kind
@@ -24,13 +29,257 @@ class SkillGitSync:
         self.path = path
         self.token = token
         self.author = author
-        tag = hashlib.md5(source_id.encode()).hexdigest()[:12]
-        self._repo_dir: Optional[Path] = Path(f"/tmp/skill-git-sync-{tag}")
+        self._repo_dir: Optional[Path] = Path(f"/tmp/skill-git-sync-{self._source_tag}")
+
+    @property
+    def _source_tag(self) -> str:
+        return hashlib.md5(self.source_id.encode()).hexdigest()[:12]
 
     def _auth_url(self) -> str:
-        if self.token and self.repo_url.startswith("https://"):
-            return self.repo_url.replace("https://", f"https://{self.token}@", 1)
+        if self.token:
+            scheme = "https" if self.repo_url.startswith("https://") else "http"
+            prefix = f"{scheme}://"
+            if self.repo_url.startswith(prefix):
+                return self.repo_url.replace(prefix, f"{scheme}://{self.token}@", 1)
         return self.repo_url
+
+    def _sync_branch(self) -> str:
+        return f"skills-sync/{self._source_tag}"
+
+    def _manifest_path(self, skills_dir: Path) -> Path:
+        return skills_dir / ".manifests" / f"{self._source_tag}.json"
+
+    def _read_manifest(self, skills_dir: Path) -> set[str]:
+        mp = self._manifest_path(skills_dir)
+        if mp.is_file():
+            try:
+                return set(json.loads(mp.read_text(encoding="utf-8")))
+            except (json.JSONDecodeError, ValueError):
+                return set()
+        return set()
+
+    def _write_manifest(self, skills_dir: Path, slugs: set[str]) -> None:
+        mp = self._manifest_path(skills_dir)
+        mp.parent.mkdir(parents=True, exist_ok=True)
+        mp.write_text(json.dumps(sorted(slugs)), encoding="utf-8")
+
+    def _prepare_sync_branch(self) -> None:
+        self._git("fetch", "origin")
+        remote_branch = f"origin/{self._sync_branch()}"
+        has_remote = self._git("rev-parse", "--verify", remote_branch).returncode == 0
+        r = self._git("checkout", self._sync_branch())
+        if r.returncode != 0:
+            self._git("checkout", self.branch)
+            self._git("reset", "--hard", f"origin/{self.branch}")
+            self._git("checkout", "-b", self._sync_branch())
+        else:
+            if has_remote:
+                self._git("merge", remote_branch, "--no-edit")
+            self._git("merge", f"origin/{self.branch}", "--no-edit")
+        gitignore = self._repo_dir / self.path / ".gitignore"
+        gitignore.parent.mkdir(parents=True, exist_ok=True)
+        if gitignore.is_file():
+            content = gitignore.read_text(encoding="utf-8")
+            if ".manifests" not in content:
+                content = content.rstrip("\n") + "\n.manifests/\n"
+                gitignore.write_text(content, encoding="utf-8")
+        else:
+            gitignore.write_text(".manifests/\n", encoding="utf-8")
+
+    def _finish_sync_branch(self) -> None:
+        self._git("push", "origin", self._sync_branch())
+        self._git("checkout", self.branch)
+
+    @staticmethod
+    def _parse_repo_info(repo_url: str) -> tuple[str, str]:
+        m = re.match(r"(?:https?://)?(?:[^@]+@)?[^/]+/([^/]+)/([^/.]+)", repo_url or "")
+        if m:
+            return m.group(1), m.group(2)
+        return "", ""
+
+    def _git_api(self, method: str, path: str, json_body=None):
+        import httpx
+        headers = {
+            "Authorization": f"token {self.token}",
+            "Accept": "application/json",
+        }
+        parsed = re.match(r"(?:https?://)?(?:[^@]+@)?([^/]+)", self.repo_url or "")
+        if not parsed:
+            return None
+        scheme = "https" if self.repo_url.startswith("https://") else "http"
+        base = f"{scheme}://{parsed.group(1)}"
+        api_url = f"{base}/api/v1{path}"
+        with httpx.Client() as client:
+            resp = client.request(method, api_url, headers=headers, json=json_body)
+            if resp.status_code < 300:
+                return resp.json()
+            logger.warning("Git API %s %s returned %d", method, path, resp.status_code)
+            return None
+
+    @staticmethod
+    def _skill_info(markdown: str) -> dict:
+        fm = _parse_frontmatter(markdown or "")
+        return {"name": fm.get("name", ""), "description": fm.get("description", "")}
+
+    def _collect_file_changes(self) -> dict[str, list[tuple[str, str]]]:
+        diff = self._git("diff", f"origin/{self.branch}...HEAD", "--name-status", "--", self.path)
+        changes: dict[str, list[tuple[str, str]]] = {}
+        prefix = self.path.rstrip("/") + "/"
+        for line in diff.stdout.strip().splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("\t", 1)
+            if len(parts) != 2:
+                continue
+            status_char, filepath = parts[0][0], parts[1]
+            if not filepath.startswith(prefix):
+                continue
+            rel = filepath[len(prefix):]
+            segs = rel.split("/")
+            if len(segs) < 2:
+                continue
+            key = f"{segs[0]}/{segs[1]}"
+            file_rel = "/".join(segs[2:]) if len(segs) > 2 else "SKILL.md"
+            changes.setdefault(key, []).append((status_char, file_rel))
+        return changes
+
+    @staticmethod
+    def _summarize_skill_changes(file_list: list[tuple[str, str]]) -> str:
+        scripts, refs, data, md_change = [], [], [], False
+        for status, fpath in file_list:
+            if fpath == "SKILL.md":
+                md_change = True
+            elif fpath.startswith("scripts/"):
+                name = fpath.split("/", 1)[-1]
+                scripts.append(name)
+            elif fpath.startswith("references/"):
+                name = fpath.split("/", 1)[-1]
+                refs.append(name)
+            else:
+                data.append(fpath)
+        parts = []
+        if md_change:
+            parts.append("SKILL.md")
+        if scripts:
+            parts.append(f"+{len(scripts)} script{'s' if len(scripts) > 1 else ''}")
+        if refs:
+            parts.append(f"+{len(refs)} ref{'s' if len(refs) > 1 else ''}")
+        if data:
+            parts.append(f"+{len(data)} file{'s' if len(data) > 1 else ''}")
+        return ", ".join(parts) if parts else "updated"
+
+    def _build_pr_body(self, changes: dict, file_changes: dict[str, list[tuple[str, str]]]) -> str:
+        parts = []
+        added = changes.get("added", [])
+        updated = changes.get("updated", [])
+        removed = changes.get("removed", [])
+        if added:
+            shown = [s for s in added if f"{s['category']}/{s['slug']}" in file_changes]
+            if shown:
+                parts.append(f"### Added ({len(shown)})\n")
+                for s in shown:
+                    key = f"{s['category']}/{s['slug']}"
+                    fc = file_changes.get(key, [])
+                    desc = self._summarize_skill_changes(fc) if fc else "new skill"
+                    parts.append(f"- **{s['slug']}** ({s['category']}) — {desc}")
+                parts.append("")
+        if updated:
+            shown = [s for s in updated if f"{s['category']}/{s['slug']}" in file_changes]
+            if shown:
+                parts.append(f"### Updated ({len(shown)})\n")
+                for s in shown:
+                    key = f"{s['category']}/{s['slug']}"
+                    fc = file_changes.get(key, [])
+                    desc = self._summarize_skill_changes(fc) if fc else "no file changes"
+                    parts.append(f"- **{s['slug']}** ({s['category']}) — {desc}")
+                parts.append("")
+        if removed:
+            shown = [s for s in removed if f"{s['category']}/{s['slug']}" in file_changes]
+            if shown:
+                parts.append(f"### Removed ({len(shown)})\n")
+                for s in shown:
+                    parts.append(f"- **{s['slug']}** ({s['category']}) — all files removed")
+                parts.append("")
+        structured = "\n".join(parts).strip()
+        summary = self._generate_summary_with_ollama(changes)
+        if summary:
+            return f"{summary}\n\n---\n\n{structured}"
+        return structured or "No changes."
+
+    def _generate_summary_with_ollama(self, changes: dict) -> str:
+        import urllib.request
+        prompt_parts = []
+        added = changes.get("added", [])
+        updated = changes.get("updated", [])
+        removed = changes.get("removed", [])
+        if not (added or updated or removed):
+            return ""
+        prompt_parts.append("Summarize these skill changes in 1-2 short sentences, in English. Be concise and specific about what changed.\n")
+        if added:
+            names = [s["slug"] for s in added]
+            prompt_parts.append(f"Added skills: {', '.join(names)}\n")
+        if updated:
+            names = [s["slug"] for s in updated]
+            prompt_parts.append(f"Updated skills: {', '.join(names)}\n")
+        if removed:
+            names = [s["slug"] for s in removed]
+            prompt_parts.append(f"Removed skills: {', '.join(names)}\n")
+        prompt = "".join(prompt_parts)
+        try:
+            data = json.dumps({"model": "gemma4:e4b", "prompt": prompt, "stream": False}).encode()
+            req = urllib.request.Request(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                data=data,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = urllib.request.urlopen(req, timeout=30)
+            result = json.loads(resp.read())
+            text = result.get("response", "").strip()
+            if text:
+                logger.info("Ollama PR summary: %s", text[:100])
+            return text
+        except Exception as exc:
+            logger.debug("Ollama summary skipped: %s", exc)
+            return ""
+
+    def _create_or_update_pr(self, push_result: dict):
+        owner, repo = self._parse_repo_info(self.repo_url)
+        if not owner or not repo:
+            return None
+        branch = self._sync_branch()
+        pulls = self._git_api("GET", f"/repos/{owner}/{repo}/pulls?head={owner}:{branch}&state=open")
+        changes = push_result.get("changes", {})
+        file_changes = push_result.get("file_changes", {})
+        title = self._build_pr_title(changes)
+        body = self._build_pr_body(changes, file_changes)
+        if pulls and isinstance(pulls, list) and len(pulls) > 0:
+            pr = pulls[0]
+            number = pr.get("number")
+            return self._git_api("PATCH", f"/repos/{owner}/{repo}/pulls/{number}", {
+                "title": title,
+                "body": body,
+            })
+        else:
+            return self._git_api("POST", f"/repos/{owner}/{repo}/pulls", {
+                "title": title,
+                "head": branch,
+                "base": self.branch,
+                "body": body,
+            })
+
+    @staticmethod
+    def _build_pr_title(changes: dict) -> str:
+        n_add = len(changes.get("added", []))
+        n_upd = len(changes.get("updated", []))
+        n_rem = len(changes.get("removed", []))
+        parts = []
+        if n_add:
+            parts.append(f"+{n_add}")
+        if n_upd:
+            parts.append(f"~{n_upd}")
+        if n_rem:
+            parts.append(f"-{n_rem}")
+        return f"Skills sync: {' '.join(parts)}"
 
     def _git_env(self) -> dict:
         name = self.author.split("<")[0].strip() if self.author else "Orchestrator"
@@ -99,7 +348,10 @@ class SkillGitSync:
             result["skipped"] = True
             return result
 
+        self._prepare_sync_branch()
+
         skills_dir = self._repo_dir / self.path
+        prev_manifest = self._read_manifest(skills_dir)
 
         with conn.cursor() as cur:
             if self.source_kind == "agent":
@@ -127,11 +379,19 @@ class SkillGitSync:
             rows = cur.fetchall()
 
         db_slugs: set[str] = set()
+        change_added = []
+        change_updated = []
         for category, slug, markdown in rows:
             db_slugs.add(f"{category}/{slug}")
             skill_path = skills_dir / category / slug
             skill_path.mkdir(parents=True, exist_ok=True)
             skill_file = skill_path / "SKILL.md"
+            is_new = f"{category}/{slug}" not in prev_manifest
+            info = {"category": category, "slug": slug, **self._skill_info(markdown)}
+            if is_new:
+                change_added.append(info)
+            else:
+                change_updated.append(info)
             skill_file.write_text(markdown or "", encoding="utf-8")
 
             if self.source_kind == "agent" and self.source_locator:
@@ -151,30 +411,40 @@ class SkillGitSync:
 
             result["pushed"] += 1
 
-        if skills_dir.is_dir():
-            for category_dir in sorted(skills_dir.iterdir()):
-                if not category_dir.is_dir():
-                    continue
-                for slug_dir in sorted(category_dir.iterdir()):
-                    if not slug_dir.is_dir():
-                        continue
-                    key = f"{category_dir.name}/{slug_dir.name}"
-                    if key not in db_slugs:
-                        shutil.rmtree(slug_dir)
-                        result["removed"] += 1
-                if category_dir.is_dir() and not any(category_dir.iterdir()):
-                    category_dir.rmdir()
+        stale_slugs = prev_manifest - db_slugs
+        change_removed = []
+        for key in stale_slugs:
+            parts = key.split("/", 1)
+            if len(parts) != 2:
+                continue
+            slug_dir = skills_dir / parts[0] / parts[1]
+            info = {"category": parts[0], "slug": parts[1]}
+            old_md = slug_dir / "SKILL.md"
+            if old_md.is_file():
+                info.update(self._skill_info(old_md.read_text(encoding="utf-8")))
+            change_removed.append(info)
+            if slug_dir.is_dir():
+                shutil.rmtree(slug_dir)
+                result["removed"] += 1
+            category_dir = skills_dir / parts[0]
+            if category_dir.is_dir() and not any(category_dir.iterdir()):
+                category_dir.rmdir()
+
+        self._write_manifest(skills_dir, db_slugs)
 
         self._git("add", self.path)
         status = self._git("status", "--porcelain", "--", self.path)
         if not status.stdout.strip():
+            self._git("checkout", self.branch)
             result["skipped"] = True
             return result
 
         self._git("commit", "-m", f"sync skills: {result['pushed']} pushed, {result['removed']} removed")
-        push_result = self._git("push", "origin", self.branch)
-        if push_result.returncode != 0:
-            logger.warning("git push failed: %s", push_result.stderr)
+        file_changes = self._collect_file_changes()
+        self._finish_sync_branch()
+        result["changes"] = {"added": change_added, "updated": change_updated, "removed": change_removed}
+        result["file_changes"] = file_changes
+        self._create_or_update_pr(result)
         return result
 
     def pull_skills(self, conn, company_id: str) -> dict:
@@ -306,3 +576,24 @@ class SkillGitSync:
 
         conn.commit()
         return result
+
+    def copy_extra_files(self, category: str, slug: str, target_dir: Path) -> int:
+        if not self._repo_dir or not (self._repo_dir / ".git").is_dir():
+            return 0
+        skill_src = self._repo_dir / self.path / category / slug
+        if not skill_src.is_dir():
+            return 0
+        count = 0
+        for src_file in skill_src.rglob("*"):
+            if not src_file.is_file():
+                continue
+            if src_file.name == "SKILL.md":
+                continue
+            rel = src_file.relative_to(skill_src)
+            if any(p == "__pycache__" for p in rel.parts):
+                continue
+            dst = target_dir / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dst)
+            count += 1
+        return count
