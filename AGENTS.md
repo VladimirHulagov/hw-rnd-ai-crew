@@ -649,7 +649,7 @@ Hermes-agent имеет систему навыков (SKILL.md) с progressive 
 
 ### Agent Skill Writeback
 
-Оркестратор автоматически обнаруживает навыки, созданные агентами через `skill_manage` tool, и персистит их в `company_skills` БД. Поддерживается двунаправленная синхронизация с git-репозиторием.
+Оркестратор автоматически обнаруживает навыки, созданные агентами через `skill_manage` tool, и персистит их в `company_skills` БД. Поддерживается двунаправленная синхронизация с git-репозиторием через per-agent branches + PR workflow.
 
 - **skill_scanner.py** — сканирует `profiles/{agentId}/skills/` на предмет новых/изменённых SKILL.md (не symlinks)
   - Пропускает symlinks (hermes-bundled навыки, подмонтированные `_sync_agent_skills()`)
@@ -659,21 +659,39 @@ Hermes-agent имеет систему навыков (SKILL.md) с progressive 
   - metadata включает: `authorAgentId`, `authorAgentName`, `category`
   - `source_type='catalog'`, `source_locator=NULL` — аналогично hermes_bundled навыкам
 - **skill_git_sync.py** — `SkillGitSync` класс для двунаправленной синхронизации с git repo
-  - **Push**: `company_skills` (sourceKind in `agent_created`, `git_sync`) → SKILL.md в repo. Удаляет orphaned-файлы.
+  - **Push**: `company_skills` (sourceKind in `agent_created`, `git_sync`) → SKILL.md + scripts в repo
   - **Pull**: SKILL.md из repo → `company_skills` (sourceKind: `git_sync`). Скрывает (hidden=true) навыки, удалённые из repo.
+  - **Per-agent branches**: каждый источник пушит в `skills-sync/<md5(source_id)[:12]>`, НЕ напрямую в main
+  - **Incremental commits**: `_prepare_sync_branch()` переиспользует существующую ветку (checkout + merge origin/main), НЕ делает `reset --hard`. Обычный `push` вместо `--force`
+  - **PR workflow**: автоматически создаёт/обновляет PR через GitHub API с structured body (Added/Updated/Removed секции, Ollama summary)
+  - **Manifest-based deletion**: каждый источник хранит свои slugs в `.manifests/<source_tag>.json`, удаляет только свои stale навыки
+  - **Script sync**: при `source_kind == "agent"` копирует все файлы (кроме SKILL.md) из профиля агента в repo — `.py` скрипты, `.yaml` references, `.json` data
   - Auth: HTTPS + PAT (embedded в URL: `https://{token}@github.com/...`)
   - Git author через `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` env vars
-  - Клонирует в `/tmp/skill-git-sync-repo`, при повторных запусках делает `git pull --rebase`
-- **Настройки**: `instance_settings.skills_sync` jsonb (repoUrl, branch, path, token, author)
-  - API: `GET/PATCH /api/instance/settings/skills-sync`, `POST .../trigger`
-  - UI: секция "Skill Repository" в Instance Settings (InstanceGeneralSettings.tsx)
-  - Orchestrator читает из БД напрямую при каждом reconcile cycle
+  - Кеширует repo в `/tmp/skill-git-sync-<source_tag>`, при повторных запусках делает `git pull --rebase`
+- **skill_sources table**: DB таблица с конфигурацией источников синхронизации (id, company_id, repo_url, ref, sync_path, sync_token, sync_author, source_kind, source_locator)
+  - `source_kind='agent'` + `source_locator=<agentId>` — sync навыков конкретного агента
+  - Orchestrator читает из `skill_sources` при каждом reconcile cycle, инициализирует `SkillGitSync` экземпляры
 - **Server-side**: `deriveSkillSourceInfo()` в `company-skills.ts` — два новых случая:
   - `metadata.sourceKind === "agent_created"` → badge `agent_created`, label `Agent: {name}`, read-only
   - `metadata.sourceKind === "git_sync"` → badge `github`, label "Git Sync" или repo URL, read-only
 - **UI badge**: `CompanySkills.tsx` — `Bot` icon для `agent_created` badge, группировка по `sourceLabel` (имя агента)
 - **E2E tests**: `e2e/test_skills_api.py` (13 API route tests), `e2e/test_skills_ui.py` (30 UI tests) — все httpx + Playwright
 - **Test infrastructure**: `docker-compose.test.yml` (port 3100, `authenticated` mode), `e2e/patch_test.sh`, `e2e/seed_skills_e2e.sql`
+- **Backup**: `board-design-engineer-skills-backup.tar.gz` — 46 board-design навыков (39 с .py скриптами) + 8 general навыков, 53 доп. файла
+
+### Skill Sync (Forgejo)
+
+- Forgejo git server at `git.collaborationism.tech` — self-hosted, branch protection on `main`
+- **Agent push:** `skill_push` MCP tool (immediate, via skill-sync MCP server port 8681)
+- **Orchestrator pull:** every 60s (unchanged)
+- **Orchestrator push:** every 10min (fallback, env `SKILL_SYNC_PUSH_INTERVAL` default 600)
+- Conflict resolution: git 3-way merge, conflicts returned to agent as structured diff for resolution
+- Repository: one per company (default), per-agent override via `skill_sources` table
+- `skill_git_sync.py` uses Forgejo API (`/api/v1/`) — compatible with GitHub API format
+- `skill_sync_mcp.py` — MCP server for agent-facing tools (`skill_push`, `skill_pull`, `skill_list_remote`)
+- Agent skill: `platform/skill-sync/SKILL.md` — instructions for using MCP tools
+- `SKILL_SYNC_API_KEY` env var for MCP auth
 
 ### Issue Checklist
 
@@ -757,7 +775,7 @@ Hermes-agent имеет систему навыков (SKILL.md) с progressive 
 - `hermes-gateway/config-template.yaml` — agent config template, includes `skills.external_dirs`
 - `hermes-gateway/skills/docker-management/SKILL.md` — custom Docker skill (docker-guard proxy, deploy, Traefik, config management)
 - `hermes-gateway/tests/test_skill_scanner.py` — 18 tests for agent skill discovery
-- `hermes-gateway/tests/test_skill_git_sync.py` — 10 tests for git sync
+- `hermes-gateway/tests/test_skill_git_sync.py` — 39 tests for git sync (PR workflow, manifest deletion, script sync)
 - `docker-compose.yml` — ui/dist bind mount, hermes-gateway service, adapter bind mounts, hermes_profiles volume, skills mount
 
 ### RAG Worker (Outline RAG):
@@ -1087,3 +1105,11 @@ docker-guard работает как deploy-узел — агенты могут
 ### hidden-sources DB schema missing
 
 `companies.hidden_sources` column exists in PostgreSQL but NOT in drizzle schema (`companies.ts`). Routes `GET/PUT /hidden-sources` fail with drizzle errors (`query.getSQL is not a function`, `Cannot convert undefined or null to object`). Fix in test container: patch routes to use drizzle `sql` template literals for raw SQL. Patch in `e2e/patch_test.sh` step 4b (applied after esbuild rebuild).
+
+### Orphan agent profiles (исправлено)
+
+Профили агентов в `/root/.hermes/profiles/<agentId>/` создаются оркестратором, но НЕ удаляются при удалении агента из БД. Это приводит к появлению orphan-профилей — директорий с UUID, которых нет в таблице `agents`.
+
+**Обнаруженный кейс:** профиль `d5ec92f7-b4e8-4a44-b371-c48b0c8eb6a3` (Board Design Engineer, старая версия) содержал 53 файла скриптов (.py, .yaml, .json) но НЕ был в таблице `agents`. Скрипты были перенесены в активный профиль `d5ec92f7-218d-4426-9a43-e65cdbe42c62`, orphan удалён.
+
+**Диагностика:** проверять наличие профиля в БД: `SELECT id FROM agents WHERE id = '<uuid>'`. Если 0 строк — профиль orphan.
