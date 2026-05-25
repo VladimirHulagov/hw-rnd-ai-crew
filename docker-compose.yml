@@ -1,5 +1,12 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "100m"
+    max-file: "3"
+
 services:
   qdrant:
+    logging: *default-logging
     image: qdrant/qdrant
     container_name: qdrant
     restart: unless-stopped
@@ -17,6 +24,7 @@ services:
     build: ./docker-guard
     container_name: hw-docker-guard
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /mnt/services/agent-deploy:/mnt/services/agent-deploy:rw
@@ -32,6 +40,7 @@ services:
     image: ollama/ollama:latest
     container_name: ollama
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - ollama_data:/root/.ollama
     networks:
@@ -43,6 +52,7 @@ services:
     build: ./rag-worker
     container_name: rag-worker
     restart: unless-stopped
+    logging: *default-logging
     env_file: .env
     environment:
       NEXTCLOUD_URL: "${NEXTCLOUD_URL:-}"
@@ -65,6 +75,7 @@ services:
     build: ./rag-mcp
     container_name: rag-mcp
     restart: unless-stopped
+    logging: *default-logging
     env_file: .env
     networks:
       - local-ai-internal
@@ -80,6 +91,7 @@ services:
     build: ./paperclip-mcp
     container_name: paperclip-mcp
     restart: unless-stopped
+    logging: *default-logging
     environment:
       PAPERCLIP_API_URL: "http://paperclip-server:3100/api"
     networks:
@@ -96,6 +108,7 @@ services:
     build: ./nextcloud-mcp
     container_name: nextcloud-mcp
     restart: unless-stopped
+    logging: *default-logging
     environment:
       NEXTCLOUD_URL: "${NEXTCLOUD_URL:-}"
       NEXTCLOUD_USER: "${NEXTCLOUD_USER:-}"
@@ -111,6 +124,7 @@ services:
       dockerfile: Dockerfile
     container_name: hermes-gateway
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       paperclip-server:
         condition: service_started
@@ -146,6 +160,9 @@ services:
       OUTLINE_DB_URL: "${OUTLINE_DB_URL:-}"
       TEAM_SKILLS_API_KEY: "${TEAM_SKILLS_API_KEY:-}"
       SKILLS_SYNC_TOKEN: "${SKILLS_SYNC_TOKEN:-}"
+      FORGEJO_URL: "http://forgejo:3000"
+      FORGEJO_TOKEN: "${FORGEJO_TOKEN:-}"
+      FORGEJO_OWNER: "${FORGEJO_OWNER:-}"
     volumes:
       - hermes_instances:/paperclip/hermes-instances
       - paperclip_data:/paperclip:ro
@@ -166,6 +183,7 @@ services:
     image: postgres:17-alpine
     container_name: paperclip-db
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: paperclip
       POSTGRES_PASSWORD: paperclip
@@ -184,6 +202,7 @@ services:
     image: paperclip-server:latest
     container_name: paperclip-server
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       paperclip-db:
         condition: service_healthy
@@ -253,6 +272,33 @@ services:
       traefik.http.routers.paperclip.tls: true
       traefik.http.services.paperclip.loadbalancer.server.port: 3100
 
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:9
+    container_name: forgejo
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - FORGEJO__database__DB_TYPE=sqlite3
+      - FORGEJO__server__ROOT_URL=https://git.${SERVER_DOMAIN}
+      - FORGEJO__server__SSH_DOMAIN=git.${SERVER_DOMAIN}
+      - FORGEJO__server__SSH_PORT=2222
+      - FORGEJO__server__LFS_START_SERVER=true
+    volumes:
+      - forgejo_data:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - local-ai-internal
+      - traefik
+    labels:
+      traefik.enable: true
+      traefik.http.routers.forgejo.rule: Host(`git.${SERVER_DOMAIN}`)
+      traefik.http.routers.forgejo.entrypoints: websecure
+      traefik.http.routers.forgejo.tls: true
+      traefik.http.services.forgejo.loadbalancer.server.port: 3000
+
 volumes:
   qdrant_data:
     external: true
@@ -276,6 +322,9 @@ volumes:
     name: gateway_ports
   hermes_profiles:
     name: hermes_profiles
+    external: true
+  forgejo_data:
+    name: forgejo_data
 
 networks:
   local-ai-internal:
