@@ -26,7 +26,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-PORT = int(os.environ.get("SKILL_SYNC_PORT", "8681"))
+PORT = int(os.environ.get("SKILL_SYNC_PORT", "8683"))
 API_KEY = os.environ.get("SKILL_SYNC_API_KEY", "")
 PROFILES_DIR = Path(os.environ.get("PROFILES_DIR", "/root/.hermes/profiles"))
 FORGEJO_URL = os.environ.get("FORGEJO_URL", "")
