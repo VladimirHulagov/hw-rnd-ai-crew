@@ -163,6 +163,7 @@ services:
       FORGEJO_URL: "http://forgejo:3000"
       FORGEJO_TOKEN: "${FORGEJO_TOKEN:-}"
       FORGEJO_OWNER: "${FORGEJO_OWNER:-}"
+      FORGEJO_ADMIN_TOKEN: "${FORGEJO_ADMIN_TOKEN:-}"
     volumes:
       - hermes_instances:/paperclip/hermes-instances
       - paperclip_data:/paperclip:ro

@@ -74,7 +74,7 @@ class SkillGitSync:
             self._git("checkout", "-b", self._sync_branch())
         else:
             if has_remote:
-                self._git("merge", remote_branch, "--no-edit")
+                self._git("reset", "--hard", remote_branch)
             self._git("merge", f"origin/{self.branch}", "--no-edit")
         gitignore = self._repo_dir / self.path / ".gitignore"
         gitignore.parent.mkdir(parents=True, exist_ok=True)
@@ -174,32 +174,54 @@ class SkillGitSync:
         updated = changes.get("updated", [])
         removed = changes.get("removed", [])
         if added:
-            shown = [s for s in added if f"{s['category']}/{s['slug']}" in file_changes]
-            if shown:
-                parts.append(f"### Added ({len(shown)})\n")
-                for s in shown:
-                    key = f"{s['category']}/{s['slug']}"
-                    fc = file_changes.get(key, [])
-                    desc = self._summarize_skill_changes(fc) if fc else "new skill"
-                    parts.append(f"- **{s['slug']}** ({s['category']}) — {desc}")
-                parts.append("")
+            parts.append(f"### Added ({len(added)})\n")
+            for s in added:
+                key = f"{s['category']}/{s['slug']}"
+                fc = file_changes.get(key, [])
+                desc = s.get("description") or s.get("name") or ""
+                detail = self._summarize_skill_changes(fc) if fc else "new skill"
+                line = f"- **{s['slug']}** ({s['category']})"
+                if desc and len(desc) < 120:
+                    line += f" — {desc}"
+                elif desc:
+                    line += f" — {desc[:117]}..."
+                else:
+                    line += f" — {detail}"
+                parts.append(line)
+            parts.append("")
         if updated:
-            shown = [s for s in updated if f"{s['category']}/{s['slug']}" in file_changes]
-            if shown:
-                parts.append(f"### Updated ({len(shown)})\n")
-                for s in shown:
+            with_files = [s for s in updated if f"{s['category']}/{s['slug']}" in file_changes]
+            without_files = [s for s in updated if f"{s['category']}/{s['slug']}" not in file_changes]
+            if with_files:
+                parts.append(f"### Updated ({len(with_files)})\n")
+                for s in with_files:
                     key = f"{s['category']}/{s['slug']}"
                     fc = file_changes.get(key, [])
-                    desc = self._summarize_skill_changes(fc) if fc else "no file changes"
-                    parts.append(f"- **{s['slug']}** ({s['category']}) — {desc}")
+                    desc = s.get("description") or s.get("name") or ""
+                    detail = self._summarize_skill_changes(fc) if fc else ""
+                    line = f"- **{s['slug']}** ({s['category']})"
+                    if detail:
+                        line += f" — {detail}"
+                    elif desc and len(desc) < 80:
+                        line += f" — {desc}"
+                    parts.append(line)
+                parts.append("")
+            if without_files:
+                parts.append(f"### Synced ({len(without_files)}, content unchanged)\n")
+                by_cat: dict[str, list[str]] = {}
+                for s in without_files:
+                    by_cat.setdefault(s["category"], []).append(s["slug"])
+                for cat, slugs in sorted(by_cat.items()):
+                    if len(slugs) <= 8:
+                        parts.append(f"- **{cat}**: {', '.join(slugs)}")
+                    else:
+                        parts.append(f"- **{cat}**: {', '.join(slugs[:8])}... (+{len(slugs) - 8} more)")
                 parts.append("")
         if removed:
-            shown = [s for s in removed if f"{s['category']}/{s['slug']}" in file_changes]
-            if shown:
-                parts.append(f"### Removed ({len(shown)})\n")
-                for s in shown:
-                    parts.append(f"- **{s['slug']}** ({s['category']}) — all files removed")
-                parts.append("")
+            parts.append(f"### Removed ({len(removed)})\n")
+            for s in removed:
+                parts.append(f"- **{s['slug']}** ({s['category']})")
+            parts.append("")
         structured = "\n".join(parts).strip()
         summary = self._generate_summary_with_ollama(changes)
         if summary:
@@ -274,12 +296,16 @@ class SkillGitSync:
         n_rem = len(changes.get("removed", []))
         parts = []
         if n_add:
-            parts.append(f"+{n_add}")
+            slugs = [s["slug"] for s in changes["added"][:3]]
+            suffix = f" +{n_add - 3} more" if n_add > 3 else ""
+            parts.append(f"+{n_add} ({', '.join(slugs)}{suffix})")
         if n_upd:
-            parts.append(f"~{n_upd}")
+            parts.append(f"~{n_upd} synced")
         if n_rem:
-            parts.append(f"-{n_rem}")
-        return f"Skills sync: {' '.join(parts)}"
+            slugs = [s["slug"] for s in changes["removed"][:3]]
+            suffix = f" +{n_rem - 3} more" if n_rem > 3 else ""
+            parts.append(f"-{n_rem} ({', '.join(slugs)}{suffix})")
+        return "Skills sync: " + ", ".join(parts) if parts else "Skills sync"
 
     def _git_env(self) -> dict:
         name = self.author.split("<")[0].strip() if self.author else "Orchestrator"
@@ -305,6 +331,8 @@ class SkillGitSync:
         if not self.repo_url:
             return False
         if (self._repo_dir / ".git").is_dir():
+            self._git("remote", "set-url", "origin", self._auth_url())
+            self._git("fetch", "origin")
             result = self._git("pull", "--rebase")
             if result.returncode != 0:
                 logger.warning("git pull failed: %s", result.stderr)
@@ -313,9 +341,13 @@ class SkillGitSync:
             return True
         self._repo_dir.parent.mkdir(parents=True, exist_ok=True)
         result = self._git(
-            "clone", "-b", self.branch, "--single-branch", self._auth_url(), str(self._repo_dir),
+            "clone", self._auth_url(), str(self._repo_dir),
             cwd=self._repo_dir.parent,
         )
+        if result.returncode == 0:
+            self._git("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+            self._git("fetch", "origin")
+            self._git("checkout", "-b", self.branch, f"origin/{self.branch}")
         if result.returncode != 0:
             shutil.rmtree(self._repo_dir, ignore_errors=True)
             result2 = self._git("clone", self._auth_url(), str(self._repo_dir), cwd=self._repo_dir.parent)
@@ -593,6 +625,8 @@ class SkillGitSync:
             if any(p == "__pycache__" for p in rel.parts):
                 continue
             dst = target_dir / rel
+            if dst.exists() and dst.stat().st_mtime > src_file.stat().st_mtime:
+                continue
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src_file, dst)
             count += 1

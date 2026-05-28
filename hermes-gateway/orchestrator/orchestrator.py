@@ -56,7 +56,7 @@ PORTS_FILE = Path("/run/gateway-ports/ports.json")
 POLL_INTERVAL = int(os.environ.get("ORCHESTRATOR_POLL_INTERVAL", "60"))
 
 PAPERCLIP_API_URL = os.environ.get("PAPERCLIP_API_URL", "http://paperclip-server:3100/api")
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgres://paperclip:paperclip@paperclip-db:5432/paperclip")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 HERMES_HOME_DEFAULT = Path.home() / ".hermes"
 
 _BWORD = "\\b"
@@ -391,12 +391,18 @@ class Orchestrator:
                 if row[0]:
                     agent_created.add(f"{row[0]}/{row[1]}")
 
+        def _skill_key(filepath: Path) -> str:
+            rel = filepath.relative_to(skills_dir)
+            parts = rel.parts
+            if len(parts) >= 2:
+                return f"{parts[0]}/{parts[1]}"
+            return ""
+
         if skills_dir.exists():
             for item in list(skills_dir.rglob("*")):
                 if item.is_file() and not item.is_symlink():
-                    rel = item.parent.relative_to(skills_dir)
-                    key = f"{rel.parent.name}/{rel.name}" if rel.parts else ""
-                    if key in agent_created:
+                    key = _skill_key(item)
+                    if key and key in agent_created:
                         continue
                     item.unlink()
                 elif item.is_symlink():
@@ -452,11 +458,6 @@ class Orchestrator:
                 if row and row[0]:
                     target.mkdir(parents=True, exist_ok=True)
                     (target / "SKILL.md").write_text(row[0], encoding="utf-8")
-            for git_sync in self._git_syncs.values():
-                extra = git_sync.copy_extra_files(category, slug, target)
-                if extra:
-                    logger.info("Copied %d extra files for agent_created skill %s/%s from git", extra, category, slug)
-                    break
 
     def _sync_agent_created_skills(self, agents: list[dict]):
         try:
@@ -507,6 +508,70 @@ class Orchestrator:
         except Exception as exc:
             logger.error("Agent skill scan failed: %s", exc)
 
+    def _ensure_forgejo_user(self, agent_id: str, agent_name: str, repo_url: str) -> str:
+        admin_token = os.environ.get("FORGEJO_ADMIN_TOKEN", "")
+        forgejo_url = os.environ.get("FORGEJO_URL", "")
+        if not admin_token or not forgejo_url:
+            return ""
+        import httpx
+        import secrets
+        import string
+
+        slug = re_module.sub(r'[^a-z0-9._-]', '', agent_name.lower().replace(' ', '-'))[:40]
+        if not slug:
+            slug = f"agent-{agent_id[:8]}"
+        password = ''.join(secrets.choice(string.ascii_letters + string.digits + string.punctuation) for _ in range(24))
+        headers = {"Authorization": f"token {admin_token}", "Content-Type": "application/json"}
+        base = forgejo_url.rstrip("/")
+
+        try:
+            with httpx.Client(timeout=15) as client:
+                resp = client.get(f"{base}/api/v1/users/{slug}", headers=headers)
+                if resp.status_code == 200:
+                    user_id = resp.json().get("id")
+                else:
+                    resp = client.post(f"{base}/api/v1/admin/users", headers=headers, json={
+                        "username": slug,
+                        "email": f"{slug}@hermes.local",
+                        "password": password,
+                        "must_change_password": False,
+                    })
+                    if resp.status_code not in (200, 201):
+                        logger.warning("Failed to create Forgejo user %s: %s", slug, resp.text[:200])
+                        return ""
+                    user_id = resp.json().get("id")
+                    logger.info("Created Forgejo user %s (id=%s)", slug, user_id)
+
+                resp = client.get(f"{base}/api/v1/users/{slug}/tokens", headers=headers)
+                existing = {t["name"] for t in resp.json()} if resp.status_code == 200 else set()
+                token_name = "skill-sync"
+                if token_name in existing:
+                    for t in resp.json():
+                        if t["name"] == token_name:
+                            client.delete(f"{base}/api/v1/users/{slug}/tokens/{t['id']}", headers=headers)
+
+                resp = client.post(f"{base}/api/v1/users/{slug}/tokens", headers=headers, json={
+                    "name": token_name,
+                    "scopes": ["write:repository", "read:repository"],
+                })
+                if resp.status_code not in (200, 201):
+                    logger.warning("Failed to create token for %s: %s", slug, resp.text[:200])
+                    return ""
+                new_token = resp.json()["sha1"]
+
+                parsed = re_module.match(r"(?:https?://)?(?:[^@]+@)?[^/]+/([^/]+)/([^/.]+)", repo_url or "")
+                if parsed:
+                    owner, repo = parsed.group(1), parsed.group(2)
+                    client.put(f"{base}/api/v1/repos/{owner}/{repo}/collaborators/{slug}", headers=headers, json={
+                        "permission": "write",
+                    })
+                    logger.info("Added %s as collaborator to %s/%s", slug, owner, repo)
+
+                return new_token
+        except Exception as exc:
+            logger.error("Forgejo user provisioning failed for %s: %s", slug, exc)
+            return ""
+
     def _init_git_sync(self):
         try:
             conn = psycopg2.connect(DATABASE_URL)
@@ -525,12 +590,35 @@ class Orchestrator:
                 if source_id in self._git_syncs:
                     continue
                 try:
+                    resolved_token = sync_token or os.environ.get("SKILLS_SYNC_TOKEN", "")
+                    if not resolved_token and source_kind == "agent" and source_locator:
+                        try:
+                            c1 = psycopg2.connect(DATABASE_URL)
+                            with c1.cursor() as cur:
+                                cur.execute("SELECT name FROM agents WHERE id = %s", (source_locator,))
+                                row = cur.fetchone()
+                            c1.close()
+                            agent_name = row[0] if row else ""
+                        except Exception:
+                            agent_name = ""
+                        new_token = self._ensure_forgejo_user(source_locator, agent_name, repo_url)
+                        if new_token:
+                            resolved_token = new_token
+                            try:
+                                c2 = psycopg2.connect(DATABASE_URL)
+                                with c2.cursor() as cur2:
+                                    cur2.execute("UPDATE skill_sources SET sync_token = %s WHERE id = %s", (new_token, source_id))
+                                c2.commit()
+                                c2.close()
+                            except Exception:
+                                pass
+
                     self._git_syncs[source_id] = SkillGitSync(
                         source_id=source_id,
                         repo_url=repo_url,
                         branch=ref or "main",
                         path=sync_path or "skills/",
-                        token=sync_token or os.environ.get("SKILLS_SYNC_TOKEN", ""),
+                        token=resolved_token,
                         author=sync_author or "Orchestrator <orchestrator@hermes>",
                         source_kind=source_kind or "",
                         source_locator=source_locator,

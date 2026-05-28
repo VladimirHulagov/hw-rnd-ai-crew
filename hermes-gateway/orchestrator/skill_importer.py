@@ -171,4 +171,6 @@ def get_skill_info(conn, company_id: str, skill_key: str) -> Optional[dict]:
             "markdown": row[1],
             "slug": row[2],
             "category": meta.get("category", "general"),
+            "sourceKind": meta.get("sourceKind", ""),
+            "sourceId": meta.get("sourceId", ""),
         }

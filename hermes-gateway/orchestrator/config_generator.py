@@ -9,6 +9,14 @@ from pathlib import Path
 
 _TEMPLATE_PATH = Path("/opt/config-template.yaml")
 
+_DEFAULT_STOP_WORDS = ["секретно", "конфиденциально", "пароль", "secret", "confidential", "password"]
+
+
+def _parse_stop_words(raw: str) -> list[str]:
+    if not raw.strip():
+        return _DEFAULT_STOP_WORDS
+    return [w.strip() for w in raw.split(",") if w.strip()]
+
 
 def _substitute(template: str, values: dict[str, str]) -> str:
     safe = string.Template(template)
@@ -44,12 +52,13 @@ def generate_profile_config(
         "company_id": company_id,
         "mcp_rag_api_key": os.environ.get("MCP_RAG_API_KEY", ""),
         "outline_api_key": outline_api_key or os.environ.get("MCP_OUTLINE_API_KEY", ""),
-        "memory_api_key": os.environ.get("MEMORY_API_KEY", ""),
+        "memory_api_key": os.environ.get("MEMORY_API_KEY", "") or "no-key-needed",
         "nextcloud_mcp_api_key": os.environ.get("NEXTCLOUD_MCP_API_KEY", ""),
         "MCP_RAG_URL": os.environ.get("MCP_RAG_URL", ""),
         "MCP_OUTLINE_URL": os.environ.get("MCP_OUTLINE_URL", ""),
         "PAPERCLIP_RUN_API_KEY": paperclip_api_key,
         "paperclip_api_key": paperclip_api_key,
+        "stop_words": "\n".join(f"    - {json.dumps(w)}" for w in _parse_stop_words(os.environ.get("STOP_WORDS", ""))),
     }
 
     platforms_lines = [

@@ -46,13 +46,38 @@ class SkillSyncServer:
         self.forgejo_owner = os.environ.get("FORGEJO_OWNER", FORGEJO_OWNER)
         self.forgejo_repo = os.environ.get("FORGEJO_REPO", FORGEJO_REPO)
         self.profiles_dir = Path(os.environ.get("PROFILES_DIR", str(PROFILES_DIR)))
+        self._agent_repo_urls: dict[str, str] = {}
 
     def _agent_tag(self, agent_id: str) -> str:
         return hashlib.md5(agent_id.encode()).hexdigest()[:12]
 
-    def _resolve_repo_url(self, override_url: str | None = None) -> str:
+    def _get_agent_token(self, agent_id: str) -> str:
+        import psycopg2
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            return self.forgejo_token
+        try:
+            conn = psycopg2.connect(db_url)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT sync_token, repo_url FROM skill_sources WHERE source_kind='agent' AND source_locator = %s AND repo_url IS NOT NULL LIMIT 1",
+                    (agent_id,),
+                )
+                row = cur.fetchone()
+            conn.close()
+            if row and row[0]:
+                if row[1]:
+                    self._agent_repo_urls[agent_id] = row[1]
+                return row[0]
+        except Exception as exc:
+            logger.debug("DB token lookup failed for %s: %s", agent_id[:8], exc)
+        return self.forgejo_token
+
+    def _resolve_repo_url(self, override_url: str | None = None, agent_id: str | None = None) -> str:
         if override_url:
             return override_url
+        if agent_id and agent_id in self._agent_repo_urls:
+            return self._agent_repo_urls[agent_id]
         if self.forgejo_url and self.forgejo_owner:
             base = self.forgejo_url.rstrip("/")
             return f"{base}/{self.forgejo_owner}/{self.forgejo_repo}.git"
@@ -84,6 +109,10 @@ class SkillSyncServer:
 
     def _ensure_repo(self, agent_id: str, repo_url: str) -> bool:
         repo_dir = self._repo_dir(agent_id)
+        token = self._get_agent_token(agent_id)
+        auth_url = repo_url
+        if token and "@" not in repo_url:
+            auth_url = repo_url.replace("https://", f"https://{token}@").replace("http://", f"http://{token}@")
         if (repo_dir / ".git").is_dir():
             r = self._git("pull", "--rebase", cwd=repo_dir)
             if r.returncode != 0:
@@ -92,7 +121,7 @@ class SkillSyncServer:
                 return self._ensure_repo(agent_id, repo_url)
             return True
         repo_dir.parent.mkdir(parents=True, exist_ok=True)
-        r = self._git("clone", repo_url, str(repo_dir), cwd=repo_dir.parent)
+        r = self._git("clone", auth_url, str(repo_dir), cwd=repo_dir.parent)
         if r.returncode != 0:
             shutil.rmtree(repo_dir, ignore_errors=True)
             return False
@@ -131,12 +160,13 @@ class SkillSyncServer:
             return m.group(2), m.group(3)
         return "", ""
 
-    def _forgejo_api(self, method: str, path: str, json_body: dict | None = None):
-        if not self.forgejo_url or not self.forgejo_token:
+    def _forgejo_api(self, method: str, path: str, json_body: dict | None = None, token: str | None = None):
+        use_token = token or self.forgejo_token
+        if not self.forgejo_url or not use_token:
             return None
         base = self.forgejo_url.rstrip("/")
         headers = {
-            "Authorization": f"token {self.forgejo_token}",
+            "Authorization": f"token {use_token}",
             "Content-Type": "application/json",
         }
         with httpx.Client() as client:
@@ -153,9 +183,11 @@ class SkillSyncServer:
         owner, repo = self._parse_repo_info(repo_url)
         if not owner or not repo:
             return None
+        token = self._get_agent_token(agent_id)
         pulls = self._forgejo_api(
             "GET",
             f"/api/v1/repos/{owner}/{repo}/pulls?state=open&head={owner}:{branch}",
+            token=token,
         )
         if pulls and isinstance(pulls, list) and len(pulls) > 0:
             pr = pulls[0]
@@ -164,11 +196,13 @@ class SkillSyncServer:
                 "PATCH",
                 f"/api/v1/repos/{owner}/{repo}/pulls/{number}",
                 {"title": title, "body": body},
+                token=token,
             )
         return self._forgejo_api(
             "POST",
             f"/api/v1/repos/{owner}/{repo}/pulls",
             {"title": title, "head": branch, "base": "main", "body": body},
+            token=token,
         )
 
     def _skill_info(self, markdown: str) -> dict:
@@ -176,7 +210,8 @@ class SkillSyncServer:
         return {"name": fm.get("name", ""), "description": fm.get("description", "")}
 
     def push(self, agent_id: str, repo_url: str | None = None) -> dict:
-        resolved_url = self._resolve_repo_url(repo_url)
+        self._get_agent_token(agent_id)
+        resolved_url = self._resolve_repo_url(repo_url, agent_id)
         if not resolved_url:
             return {"error": "No repo URL configured"}
         if not self._ensure_repo(agent_id, resolved_url):
@@ -215,7 +250,7 @@ class SkillSyncServer:
             self._git("checkout", "main", cwd=repo_dir)
             return {"error": f"No skills directory for agent {agent_id}"}
 
-        pushed = []
+        local_skills = set()
         for skill_md in sorted(profile_skills.rglob("SKILL.md")):
             if skill_md.is_symlink():
                 continue
@@ -225,9 +260,12 @@ class SkillSyncServer:
                 continue
             category = parts[0]
             slug = parts[-1]
+            local_skills.add(f"{category}/{slug}")
             dst_dir = repo_dir / "skills" / category / slug
             dst_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(skill_md, dst_dir / "SKILL.md")
+            local_files = set()
+            local_files.add("SKILL.md")
             for src_file in skill_md.parent.rglob("*"):
                 if not src_file.is_file() or src_file.name == "SKILL.md":
                     continue
@@ -239,9 +277,27 @@ class SkillSyncServer:
                 dst = dst_dir / file_rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_file, dst)
+                local_files.add(str(file_rel))
+            for old in list(dst_dir.rglob("*")):
+                if old.is_file():
+                    old_rel = str(old.relative_to(dst_dir))
+                    if old_rel not in local_files and not any(p == "__pycache__" for p in old.relative_to(dst_dir).parts):
+                        old.unlink()
             text = skill_md.read_text(encoding="utf-8")
             info = self._skill_info(text)
             pushed.append({"category": category, "slug": slug, **info})
+
+        repo_skills_dir = repo_dir / "skills"
+        if repo_skills_dir.is_dir():
+            for cat_dir in list(repo_skills_dir.iterdir()):
+                if not cat_dir.is_dir():
+                    continue
+                for slug_dir in list(cat_dir.iterdir()):
+                    if not slug_dir.is_dir():
+                        continue
+                    key = f"{cat_dir.name}/{slug_dir.name}"
+                    if key not in local_skills:
+                        shutil.rmtree(slug_dir)
 
         self._git("add", "skills", cwd=repo_dir)
         status = self._git("status", "--porcelain", "--", "skills", cwd=repo_dir)
@@ -264,7 +320,8 @@ class SkillSyncServer:
         return {"pushed": n, "skills": pushed}
 
     def pull(self, agent_id: str, repo_url: str | None = None) -> dict:
-        resolved_url = self._resolve_repo_url(repo_url)
+        self._get_agent_token(agent_id)
+        resolved_url = self._resolve_repo_url(repo_url, agent_id)
         if not resolved_url:
             return {"error": "No repo URL configured"}
         if not self._ensure_repo(agent_id, resolved_url):
@@ -281,6 +338,7 @@ class SkillSyncServer:
 
         profile_skills = self.profiles_dir / agent_id / "skills"
         imported = []
+        skipped = []
         for skill_md in sorted(skills_src.rglob("SKILL.md")):
             rel = skill_md.parent.relative_to(skills_src)
             parts = rel.parts
@@ -290,7 +348,11 @@ class SkillSyncServer:
             slug = parts[-1]
             dst_dir = profile_skills / category / slug
             dst_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(skill_md, dst_dir / "SKILL.md")
+            local_md = dst_dir / "SKILL.md"
+            if local_md.exists() and local_md.stat().st_mtime > skill_md.stat().st_mtime:
+                skipped.append(f"{category}/{slug}")
+            else:
+                shutil.copy2(skill_md, local_md)
             for src_file in skill_md.parent.rglob("*"):
                 if not src_file.is_file() or src_file.name == "SKILL.md":
                     continue
@@ -298,16 +360,20 @@ class SkillSyncServer:
                 if any(p == "__pycache__" for p in file_rel.parts):
                     continue
                 dst = dst_dir / file_rel
+                if dst.exists() and dst.stat().st_mtime > src_file.stat().st_mtime:
+                    continue
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_file, dst)
             text = skill_md.read_text(encoding="utf-8")
             info = self._skill_info(text)
             imported.append({"category": category, "slug": slug, **info})
 
-        return {"imported": len(imported), "skills": imported}
+        return {"imported": len(imported), "skills": imported, "skipped_newer_local": skipped}
 
-    def list_remote(self, repo_url: str | None = None, category: str | None = None) -> dict:
-        resolved_url = self._resolve_repo_url(repo_url)
+    def list_remote(self, repo_url: str | None = None, category: str | None = None, agent_id: str | None = None) -> dict:
+        if agent_id:
+            self._get_agent_token(agent_id)
+        resolved_url = self._resolve_repo_url(repo_url, agent_id)
         if not resolved_url:
             return {"error": "No repo URL configured"}
 
@@ -418,6 +484,7 @@ async def list_tools():
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "agent_id": {"type": "string", "description": "Agent UUID (optional, uses configured repo if omitted)"},
                     "repo_url": {"type": "string", "description": "Override repo URL (optional)"},
                     "category": {"type": "string", "description": "Filter by category (optional)"},
                 },
@@ -429,9 +496,9 @@ async def list_tools():
 @mcp_server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any] | None) -> list[types.TextContent]:
     arguments = arguments or {}
+    agent_id = arguments.get("agent_id", "")
     try:
         if name == "skill_push":
-            agent_id = arguments.get("agent_id", "")
             if not agent_id:
                 return [types.TextContent(type="text", text="Error: agent_id is required")]
             result = await asyncio.to_thread(
@@ -440,7 +507,6 @@ async def call_tool(name: str, arguments: dict[str, Any] | None) -> list[types.T
             return [types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False, default=str))]
 
         elif name == "skill_pull":
-            agent_id = arguments.get("agent_id", "")
             if not agent_id:
                 return [types.TextContent(type="text", text="Error: agent_id is required")]
             result = await asyncio.to_thread(
@@ -453,6 +519,7 @@ async def call_tool(name: str, arguments: dict[str, Any] | None) -> list[types.T
                 server_instance.list_remote,
                 arguments.get("repo_url"),
                 arguments.get("category"),
+                agent_id or None,
             )
             return [types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False, default=str))]
 

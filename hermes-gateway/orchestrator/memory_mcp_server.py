@@ -151,90 +151,96 @@ async def call_tool(name: str, arguments: dict[str, Any] | None) -> list[types.T
         return [types.TextContent(type="text", text=f"Error: {e}")]
 
 
-class MCPApp:
-    def __init__(self):
-        self._transport = None
-        self._server_task = None
+_transport = StreamableHTTPServerTransport(
+    mcp_session_id=None,
+    is_json_response_enabled=True,
+)
+_http_task = None
 
-    async def start(self):
-        self._transport = StreamableHTTPServerTransport(mcp_session_id=None)
-        self._server_task = asyncio.create_task(self._run_server())
 
-    async def _run_server(self):
-        async with self._transport.connect() as (read_stream, write_stream):
-            await mcp_server.run(
-                read_stream,
-                write_stream,
-                mcp_server.create_initialization_options(),
-            )
-
-    async def handle(self, request: web.Request) -> web.StreamResponse:
-        if not _check_auth(request):
-            return web.Response(status=401, text="Unauthorized")
-
-        scope = {
-            "type": "http",
-            "method": request.method,
-            "path": request.path,
-            "query_string": request.query_string.encode(),
-            "headers": [(k.lower().encode(), v.encode()) for k, v in request.headers.items()],
-            "server": ("0.0.0.0", PORT),
-        }
-
-        body = await request.read()
-        body_sent = False
-
-        async def receive():
-            nonlocal body_sent
-            if body_sent:
-                return {"type": "http.disconnect"}
-            body_sent = True
-            return {"type": "http.request", "body": body, "more_body": False}
-
-        response_started = False
-        status_code = 200
-        headers_list = []
-
-        async def send(message):
-            nonlocal response_started, status_code, headers_list
-            if message["type"] == "http.response.start":
-                status_code = message["status"]
-                headers_list = [(h[0].decode(), h[1].decode()) for h in message.get("headers", [])]
-                response_started = True
-            elif message["type"] == "http.response.body":
-                pass
-
-        await self._transport.handle_request(scope, receive, send)
-
-        resp_body = b""
-        if response_started:
-            async def receive2():
-                return {"type": "http.disconnect"}
-            chunks = []
-
-            async def send2(msg):
-                if msg["type"] == "http.response.body":
-                    chunks.append(msg.get("body", b""))
-
-            await self._transport.handle_request(scope, receive, send2)
-            resp_body = b"".join(chunks) if chunks else b""
-
-        return web.Response(
-            status=status_code,
-            headers=dict(headers_list),
-            body=resp_body,
+async def _run_http_server():
+    async with _transport.connect() as streams:
+        await mcp_server.run(
+            streams[0], streams[1], mcp_server.create_initialization_options()
         )
+
+
+async def _ensure_http_server():
+    global _http_task
+    if _http_task is None:
+        _http_task = asyncio.ensure_future(_run_http_server())
+        await asyncio.sleep(0.1)
+
+
+async def _asgi_handler(scope, receive, send):
+    if not API_KEY:
+        pass
+    else:
+        headers = {}
+        for key, value in scope.get("headers", []):
+            headers[key.decode()] = value.decode()
+        auth_header = headers.get("authorization", "")
+        if not auth_header.startswith("Bearer ") or auth_header[7:] != API_KEY:
+            body = b'{"error":"unauthorized"}'
+            await send({
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [[b"content-type", b"application/json"], [b"content-length", str(len(body)).encode()]],
+            })
+            await send({"type": "http.response.body", "body": body})
+            return
+    await _ensure_http_server()
+    await _transport.handle_request(scope, receive, send)
+
+
+async def _handle_aiohttp(request: web.Request) -> web.StreamResponse:
+    scope = {
+        "type": "http",
+        "method": request.method,
+        "path": request.path,
+        "query_string": request.query_string.encode(),
+        "headers": [(k.lower().encode(), v.encode()) for k, v in request.headers.items()],
+        "server": ("0.0.0.0", PORT),
+    }
+
+    body = await request.read()
+    body_sent = False
+
+    async def receive():
+        nonlocal body_sent
+        if body_sent:
+            return {"type": "http.disconnect"}
+        body_sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    status_code = 200
+    headers_list = []
+    chunks = []
+
+    async def send(message):
+        nonlocal status_code, headers_list
+        if message["type"] == "http.response.start":
+            status_code = message["status"]
+            headers_list = [(h[0].decode(), h[1].decode()) for h in message.get("headers", [])]
+        elif message["type"] == "http.response.body":
+            chunks.append(message.get("body", b""))
+
+    await _asgi_handler(scope, receive, send)
+    resp_body = b"".join(chunks) if chunks else b""
+
+    return web.Response(
+        status=status_code,
+        headers=dict(headers_list),
+        body=resp_body,
+    )
 
 
 async def main():
     logger.info("Memory MCP server starting on port %d (qdrant=%s, model=%s)",
                 PORT, QDRANT_URL, EMBED_MODEL)
 
-    app = MCPApp()
-    await app.start()
-
     web_app = web.Application()
-    web_app.router.add_route("*", "/mcp", app.handle)
+    web_app.router.add_route("*", "/mcp", _handle_aiohttp)
 
     runner = web.AppRunner(web_app)
     await runner.setup()
