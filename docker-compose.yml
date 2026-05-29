@@ -164,6 +164,7 @@ services:
       FORGEJO_TOKEN: "${FORGEJO_TOKEN:-}"
       FORGEJO_OWNER: "${FORGEJO_OWNER:-}"
       FORGEJO_ADMIN_TOKEN: "${FORGEJO_ADMIN_TOKEN:-}"
+      SKILL_SYNC_PORT: "8683"
     volumes:
       - hermes_instances:/paperclip/hermes-instances
       - paperclip_data:/paperclip:ro
