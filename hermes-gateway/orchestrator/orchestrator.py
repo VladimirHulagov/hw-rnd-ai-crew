@@ -719,10 +719,21 @@ class Orchestrator:
         except Exception:
             logger.error("Failed to provision Outline user for %s", name)
 
+        runtime_config = adapter_config.get("runtime", {}) or {}
+        agent_model = runtime_config.get("model") or adapter_config.get("model")
+        model_provider = None
+        model_name = None
+        if agent_model and "/" in agent_model:
+            model_provider, model_name = agent_model.split("/", 1)
+        elif agent_model:
+            model_name = agent_model
+
         config = generate_profile_config(
             agent_id=agent_id,
             company_id=company_id,
             allocated_port=port,
+            model=model_name or "glm-5.2",
+            provider=model_provider or "zai",
             telegram_bot_token=agent_telegram.get("botToken") if enable_telegram else None,
             telegram_chat_id=agent_telegram.get("chatId") if enable_telegram else None,
             telegram_allowed_users=agent_telegram.get("allowedUsers") if enable_telegram else None,

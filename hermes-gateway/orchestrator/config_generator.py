@@ -11,6 +11,10 @@ _TEMPLATE_PATH = Path("/opt/config-template.yaml")
 
 _DEFAULT_STOP_WORDS = ["секретно", "конфиденциально", "пароль", "secret", "confidential", "password"]
 
+_KNOWN_LOCAL_PROVIDERS = {
+    "ollama": ("http://ollama:11434/v1", "ollama"),
+}
+
 
 def _parse_stop_words(raw: str) -> list[str]:
     if not raw.strip():
@@ -23,14 +27,27 @@ def _substitute(template: str, values: dict[str, str]) -> str:
     return safe.safe_substitute(values)
 
 
+def _build_model_section(model: str, provider: str) -> str:
+    if provider in _KNOWN_LOCAL_PROVIDERS:
+        base_url, api_key = _KNOWN_LOCAL_PROVIDERS[provider]
+        return "\n".join([
+            "model:",
+            f"  default: {model}",
+            f"  provider: custom",
+            f"  base_url: {base_url}",
+            f"  api_key: {api_key}",
+        ])
+    return f"model:\n  default: {model}\n  provider: {provider}"
+
+
 def generate_profile_config(
     agent_id: str,
     company_id: str,
     allocated_port: int,
-    model: str = "glm-5.1",
+    model: str = "glm-5.2",
     provider: str = "zai",
     personality: str = "kawaii",
-    summary_model: str = "glm-5",
+    summary_model: str | None = None,
     vision_model: str = "glm-4.6v",
     telegram_bot_token: str | None = None,
     telegram_chat_id: str | None = None,
@@ -42,9 +59,17 @@ def generate_profile_config(
 ) -> str:
     template = _TEMPLATE_PATH.read_text()
 
+    model_section = _build_model_section(model, provider)
+
+    # Auto-derive compression model: local providers reuse the main model,
+    # cloud providers default to glm-5.2.
+    if summary_model is None:
+        summary_model = model if provider in _KNOWN_LOCAL_PROVIDERS else "glm-5.2"
+
     values: dict[str, str] = {
         "model": model,
         "provider": provider,
+        "model_section": model_section,
         "personality": personality,
         "summary_model": summary_model,
         "vision_model": vision_model,

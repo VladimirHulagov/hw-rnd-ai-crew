@@ -1,6 +1,4 @@
-model:
-  default: ${model}
-  provider: ${provider}
+${model_section}
 agent:
   tool_use_enforcement: auto
   max_turns: 90
@@ -16,7 +14,7 @@ compression:
   target_ratio: 0.2
   protect_last_n: 20
   summary_model: ${summary_model}
-  summary_provider: auto
+  summary_provider: main
 auxiliary:
   vision:
     provider: ${provider}
@@ -89,7 +87,7 @@ mcp_servers:
     enabled: true
     timeout: 120
     connect_timeout: 30
-_config_version: 14
+_config_version: 15
 stop_words:
   enabled: true
   words:
