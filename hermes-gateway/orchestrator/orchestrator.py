@@ -139,7 +139,7 @@ def fetch_agents_from_db() -> list[dict]:
             JOIN company_memberships cm
                 ON cm.principal_id = a.id::text
                 AND cm.principal_type = 'agent'
-            WHERE a.adapter_type = 'hermes_local'
+            WHERE a.adapter_type = 'hermes_gateway'
               AND a.status NOT IN ('terminated', 'paused')
             ORDER BY a.name
         """)
@@ -174,7 +174,7 @@ def _create_agent_jwt(agent_id: str, company_id: str) -> str:
     claims = _b64url(json.dumps({
         "sub": agent_id,
         "company_id": company_id,
-        "adapter_type": "hermes_local",
+        "adapter_type": "hermes_gateway",
         "run_id": str(uuid.uuid4()),
         "iat": now,
         "exp": now + 86400,
