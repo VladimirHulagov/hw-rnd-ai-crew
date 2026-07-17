@@ -279,6 +279,7 @@ services:
       - FORGEJO__server__SSH_DOMAIN=git.${SERVER_DOMAIN}
       - FORGEJO__server__SSH_PORT=2222
       - FORGEJO__server__LFS_START_SERVER=true
+      - FORGEJO__webhook__ALLOWED_HOST_LIST=external,loopback,private,forgejo-ci,forgejo
     volumes:
       - forgejo_data:/data
       - /etc/timezone:/etc/timezone:ro
@@ -292,6 +293,24 @@ services:
       traefik.http.routers.forgejo.entrypoints: websecure
       traefik.http.routers.forgejo.tls: true
       traefik.http.services.forgejo.loadbalancer.server.port: 3000
+
+  forgejo-ci:
+    build: ./forgejo-ci
+    image: forgejo-ci:latest
+    container_name: forgejo-ci
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      - FORGEJO_URL=http://forgejo:3000
+      - FORGEJO_TOKEN=${FORGEJO_TOKEN}
+      - WEBHOOK_SECRET=${CI_WEBHOOK_SECRET}
+      - REPO_FULL=skill-sync/schematic-review-skills
+      - STATUS_CONTEXT=ci/schematic-review-tests
+    volumes:
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - local-ai-internal
 
 volumes:
   qdrant_data:
