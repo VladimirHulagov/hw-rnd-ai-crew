@@ -7,70 +7,109 @@ Infrastructure for the AI crew: RAG pipeline over Nextcloud files, Paperclip ser
 ### Service Topology
 
 ```
-                                 ┌──────────────────────┐
-                                 │       INTERNET        │
-                                 │  Users / Telegram /   │
-                                 │  LLM Providers (API)  │
-                                 └──────────┬───────────┘
-                                            │
-                              ┌─────────────┴──────────────┐
-                              │        Traefik             │
-                              │    (TLS termination,       │
-                              │     reverse proxy)         │
-                              │    network: traefik-public │
-                              └──┬──────────┬──────────┬───┘
-                    paperclip.*  │          │          │  rag.*
-                                 │          │          │
-           ┌──────────────────────┘          │          └───────────────────────┐
-           ▼                                 ▼                                  ▼
-┌─────────────────────┐          ┌──────────────────┐              ┌───────────────────┐
-│  paperclip-server   │          │     rag-mcp      │              │   paperclip-mcp   │
-│     (:3100)         │          │     (:8081)      │              │     (:8082)       │
-│                     │          │                  │              │                   │
-│ ┌─────────────────┐ │          │ MCP tools:       │              │ MCP tools:        │
-│ │ REST API        │ │          │ • search_nextcloud│              │ • paperclip_list_* │
-│ │ (auth, CRUD,    │ │          │ • search_outline │              │ • paperclip_set_*  │
-│ │  heartbeat,     │ │          │ • list_outline_* │              │ • paperclip_update*│
-│ │  budgets,       │ │          │                  │              │   (23 tools)      │
-│ │  skills)        │ │          └────────┬─────────┘              └────────┬──────────┘
-│ └─────────────────┘ │                   │                                 │
-│ ┌─────────────────┐ │                   ▼                                 │
-│ │ UI (Vite SPA)   │ │          ┌──────────────────┐                       │
-│ │ (React)         │ │          │      Qdrant      │                       │
-│ └─────────────────┘ │          │   (:6333/6334)   │                       │
-│ ┌─────────────────┐ │          └──────────────────┘                       │
-│ │ Heartbeat Svc   │ │                                                     │
-│ │ (cron → runs)   │ │                                                     │
-│ └────────┬────────┘ │                                                     │
-└──────────┼──────────┘                                                     │
-           │                                                                │
-           │  POST /v1/runs (SSE)     ┌────────────────────────┐           │
-           │  (heartbeat_run_id +     │    hermes-gateway      │           │
-           │   pcp_* API key)         │   (Supervisor PID 1)   │           │
-           │                     ┌───►│                        │           │
-           └─────────────────────┼───►│ orchestrator.py        │           │
-                                 │    │ gateway × N (api_server)│           │
-                                 │    │ session_indexer.py      │           │
-                                 │    │ memory_mcp_server       │           │
-                                 │    │ rag-worker              │           │
-                                 │    └────────────────────────┘           │
-           │                                                            │
-           ▼  ▼                                                         │
-┌──────────────────┐    ┌──────────────┐    ┌──────────────────┐        │
-│  paperclip-db    │    │    Ollama     │    │  docker-guard    │        │
-│  PostgreSQL 17   │    │   (:11434)   │    │    (:2375)       │        │
-│  (:5432)         │    └──────────────┘    └──────────────────┘        │
-└──────────────────┘                                                    │
-                                                                        │
-┌─── External integrations ─────────────────────────────────────────┐   │
-│  Telegram (per-agent bots) · GitHub (skill git sync)              │   │
-│  LLM Providers: GLM, ZAI, Gemini, OpenRouter                      │   │
-└───────────────────────────────────────────────────────────────────┘   │
-                                                                        │
-┌─── Shared Docker Volumes ─────────────────────────────────────────┐   │
-│  paperclip_pgdata · paperclip_data · hermes_profiles               │   │
-│  hermes_venv · hermes_src · gateway_ports · qdrant_data · ollama_data│   │
-└────────────────────────────────────────────────────────────────────┘   │
+                              ┌──────────────────────┐
+                              │       INTERNET        │
+                              │  Users / Telegram /   │
+                              │  LLM Providers (API)  │
+                              │  Git clients (git.*)  │
+                              └──────────┬───────────┘
+                                         │
+                           ┌─────────────┴──────────────┐
+                           │         Traefik            │
+                           │  (TLS termination,         │
+                           │   reverse proxy)           │
+                           │   network: traefik-public  │
+                           └──┬────────┬────────┬───────┘
+                              │        │        │
+                paperclip.*   │        │ rag-mcp.* / mcp.*    git.*
+                              │        │        │
+                ┌─────────────┘        │        └─────────────┐
+                ▼                      ▼                      ▼
+     ┌─────────────────────┐ ┌──────────────────┐ ┌─────────────────────┐
+     │  paperclip-server   │ │     rag-mcp      │ │      forgejo        │
+     │      (:3100)        │ │     (:8081)      │ │   git.* (:3000)     │
+     │                     │ │                  │ │  skill-sync repos   │
+     │  REST API · UI      │ │ search_nextcloud │ │  (branch-protected) │
+     │  Heartbeat Svc      │ │ search_outline   │ └──────────┬──────────┘
+     │  (cron → runs)      │ │ list_outline_docs│            │ pull/push
+     │  Budgets · Skills   │ └────────┬─────────┘            ▼
+     └──────────┬──────────┘          │           ┌─────────────────────┐
+                │                     ▼           │     forgejo-ci      │
+                │           ┌──────────────────┐  │  webhook CI runner  │
+                │           │      Qdrant      │  │  (skill-sync status)│
+                │           │   (:6333/6334)   │  └─────────────────────┘
+                │           │  • outline_docs   │
+                │           │  • agent_memory   │
+                │           │  • nextcloud_*    │
+                │           └──────────────────┘
+                │ POST /v1/runs (SSE)
+                │ pcp_* key + run_id
+                ▼
+     ┌──────────────────────────────────────────────────────────────┐
+     │             hermes-gateway (Supervisor PID 1)                │
+     │  ┌────────────────────────────────────────────────────────┐  │
+     │  │ orchestrator.py    60s reconcile (DB → config → super)  │  │
+     │  │ gateway × N        :8642-8673 (api_server.py per agent) │  │
+     │  │ session_indexer    10 min cron → Qdrant agent_memory    │  │
+     │  │ memory_mcp_server  :8680 (MCP: search_memory, get_ctx)  │  │
+     │  │ team_skills_api    :8681 (paperclip team-skills proxy)  │  │
+     │  │ skill_sync_mcp     :8683 (MCP: skill_push ↔ Forgejo)    │  │
+     │  └────────────────────────────────────────────────────────┘  │
+     │  Mounts: hermes_profiles(rw) · paperclip_data(ro)            │
+     │          hermes_venv · hermes_src · gateway_ports(rw)        │
+     │          ./hermes-gateway/skills(ro) · agent_api_keys.json   │
+     └──┬─────────────┬─────────────┬─────────────┬─────────────┬───┘
+        │             │             │             │             │
+        ▼             ▼             ▼             ▼             ▼
+   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+   │ paperclip│  │  Ollama  │  │ docker-  │  │  rag-    │  │nextcloud │
+   │   -db    │  │ (:11434) │  │  guard   │  │ worker   │  │   -mcp   │
+   │PostgreSQL│  │nomic-emb │  │ (:2375)  │  │ (:8080)  │  │(internal)│
+   │  17      │  │ -text    │  │+agent-   │  │Outline   │  │→Nextcloud│
+   │ (:5432)  │  │llama3    │  │ deploy/  │  │Nextcloud │  │  WebDAV  │
+   └────┬─────┘  └──────────┘  └────┬─────┘  └──────────┘  └────┬─────┘
+        │                           │                           │
+        │ reads/writes              │ filtered API              │ file ops
+        │ (agents, issues,          │ (GET allowed,             │ (read/write/
+        │  skills, heartbeat_runs,  │  writes blocked)          │  list/upload/
+        │  budgets, activity_log)   │                           │  download)
+        ▼                           ▼                           ▼
+   PostgreSQL 17               /var/run/docker.sock        Nextcloud WebDAV
+```
+
+### Supporting infrastructure
+
+```
+ ┌─── outline_internal network ────────────────────┐
+ │  Outline (outline.collaborationism.tech)         │
+ │  ◄── hermes-gateway MCP (Bearer ol_api_...)      │
+ │      create / update / search docs               │
+ └──────────────────────────────────────────────────┘
+
+ ┌─── nextcloud-rag network ────────────────────────┐
+ │  Nextcloud (file storage)                        │
+ │  ◄── rag-worker (WebDAV, indexing every 600s)    │
+ │  ◄── nextcloud-mcp (agent file read/write)       │
+ └──────────────────────────────────────────────────┘
+
+ ┌─── External integrations ────────────────────────┐
+ │  Telegram (per-agent bots)                       │
+ │  LLM Providers (credential pool, rotates):       │
+ │    GLM, ZAI, Gemini, OpenRouter                  │
+ └──────────────────────────────────────────────────┘
+
+ ┌─── Shared Docker Volumes ────────────────────────┐
+ │  paperclip_pgdata   ← paperclip-db persistence   │
+ │  paperclip_data     ← agent instructions, prompts│
+ │  hermes_profiles    ← agent sessions, skills     │
+ │  hermes_venv        ← pip-installed hermes-agent │
+ │  hermes_src         ← hermes-agent-build copy    │
+ │  hermes_instances   ← hermes instance data       │
+ │  gateway_ports      ← ports.json (shared rw)     │
+ │  qdrant_data        ← vector embeddings          │
+ │  ollama_data        ← LLM models                 │
+ │  forgejo_data       ← Forgejo git repos + LFS    │
+ └──────────────────────────────────────────────────┘
 ```
 
 ### Heartbeat Run Flow
@@ -94,13 +133,14 @@ Infrastructure for the AI crew: RAG pipeline over Nextcloud files, Paperclip ser
     • AIAgent.run_conversation()
       → LLM API call → tool_use loop → text-only retry (×2)
          │
-         │ 4. MCP tool calls (during agent loop)
-         ├────► paperclip-mcp ──► paperclip-server API
-         ├────► rag-mcp ──► Qdrant (semantic search)
-         ├────► Outline MCP ──► Outline API
-         ├────► memory MCP (:8680) ──► Qdrant
-         ├────► nextcloud-mcp ──► Nextcloud WebDAV
-         └────► docker-guard ──► Docker daemon
+          │ 4. MCP tool calls (during agent loop)
+          ├────► paperclip-mcp (:8082) ──► paperclip-server API
+          ├────► rag-mcp (:8081) ──► Qdrant (search_outline, search_nextcloud)
+          ├────► Outline MCP (external) ──► Outline API
+          ├────► memory MCP (:8680) ──► Qdrant (agent_memory)
+          ├────► nextcloud-mcp ──► Nextcloud WebDAV
+          ├────► skill_sync MCP (:8683) ──► Forgejo (skill_push / skill_pull)
+          └────► docker-guard (:2375) ──► Docker daemon (filtered GET, blocked write)
 
          5. Result ◄─────────────────────────────────
     adapter: Parse SSE stream → return resultJson: { summary }
@@ -134,13 +174,19 @@ Infrastructure for the AI crew: RAG pipeline over Nextcloud files, Paperclip ser
 |---------|------|-------------|
 | **paperclip-server** | 3100 | Paperclip AI agent control plane (REST API, heartbeat, skills, budgets) |
 | **paperclip-db** | 5432 | PostgreSQL 17 for Paperclip |
-| **hermes-gateway** | 8642-8673 | Hermes agent runtime (Supervisor PID 1, N gateway processes) |
+| **hermes-gateway** | 8642-8673 | Hermes agent runtime (Supervisor PID 1, N gateway processes, orchestrator) |
+| **hermes-gateway** | 8680 | memory_mcp_server (search_memory, get_agent_context) |
+| **hermes-gateway** | 8681 | team_skills_api (target of paperclip-server team-skills proxy) |
+| **hermes-gateway** | 8683 | skill_sync_mcp (skill_push / skill_pull ↔ Forgejo) |
 | **paperclip-mcp** | 8082 | MCP server: 23 Paperclip tools (list/set/update issues, skills, checklist) |
 | **rag-mcp** | 8081 | MCP server: search_nextcloud, search_outline, list tools |
 | **rag-worker** | 8080 | FastAPI indexer: Outline (300s) + Nextcloud (600s) sync → Qdrant |
+| **nextcloud-mcp** | internal | MCP server: Nextcloud file tools (read/write/list/upload/download) |
 | **qdrant** | 6333 | Vector database (outline_docs, agent_memory, nextcloud_* collections) |
 | **ollama** | 11434 | Local LLM (nomic-embed-text 768d, llama3, qwen) |
-| **docker-guard** | 2375 | Docker API proxy (filtered GET, blocked write) |
+| **docker-guard** | 2375 | Docker API proxy (filtered GET, blocked write, agent-deploy sandbox) |
+| **forgejo** | 3000 | Self-hosted Git server (git.*) — skill-sync repos, branch-protected `main` |
+| **forgejo-ci** | internal | Webhook-driven CI runner for skill-sync repos (status checks) |
 
 ## Submodules
 
@@ -176,6 +222,7 @@ cp .env.example .env
 ```bash
 docker network create local-ai-internal
 docker network create nextcloud-rag
+docker network create outline_internal
 docker network create traefik-public
 ```
 
@@ -231,6 +278,40 @@ All embeddings use **Ollama nomic-embed-text** (768d, cosine similarity).
 | `search_memory` | Semantic search over agent session history |
 | `get_agent_context` | Get agent context by name |
 
+**skill_sync-mcp** (internal `:8683`, inside hermes-gateway):
+
+| Tool | Description |
+|------|-------------|
+| `skill_push` | Push agent-created skill to Forgejo (per-agent branch + PR) |
+| `skill_pull` | Pull latest skill content from Forgejo |
+| `skill_list_remote` | List skills in Forgejo repo |
+
+## Skill Sync Pipeline
+
+Bidirectional sync between agent profiles and **Forgejo** (`git.<domain>`) enables skills created by agents to be persisted, reviewed via PRs, and shared.
+
+```
+  Agent (skill_manage tool)
+        │
+        ▼
+  ~/.hermes/profiles/<agentId>/skills/<category>/<slug>/SKILL.md
+        │
+        ▼  (orchestrator, every 60s)
+  skill_scanner.py ──► company_skills DB (sourceKind: agent_created)
+        │
+        ▼  (orchestrator, every 10 min, fallback)
+  skill_git_sync.py ──► Forgejo branch skills-sync/<md5(source_id)[:12]>
+        │                  ├── 3-way merge with origin/main
+        │                  └── PR via Forgejo API (structured body)
+        ▼
+  Forgejo repo (one per company, branch-protected main)
+        │
+        ▼  (orchestrator, every 60s)
+  skill_git_sync.py pull ──► company_skills DB (sourceKind: git_sync)
+```
+
+Agent-facing path: `skill_push` MCP tool (immediate, via skill_sync MCP on `:8683`). Orchestrator pull: every 60s. Orchestrator push: every 10 min (env `SKILL_SYNC_PUSH_INTERVAL`, default 600s).
+
 ## Agent Adapters
 
 | Adapter | Description |
@@ -243,11 +324,12 @@ All embeddings use **Ollama nomic-embed-text** (768d, cosine similarity).
 
 - **Paperclip** (TypeScript/Node.js) — agent control plane, REST API, Vite SPA
 - **Hermes Agent** (Python) — AI agent with MCP client, 73+ built-in skills
-- **Hermes Gateway** (Python/Supervisor) — orchestrator, N gateway processes, session indexer
-- **FastAPI** (Python) — rag-worker, rag-mcp, paperclip-mcp, memory-mcp
+- **Hermes Gateway** (Python/Supervisor) — orchestrator, N gateway processes, session indexer, skill sync
+- **FastAPI** (Python) — rag-worker, rag-mcp, paperclip-mcp, nextcloud-mcp, memory-mcp, skill_sync-mcp
 - **Qdrant** — vector database (768d cosine, nomic-embed-text)
 - **PostgreSQL 17** — Paperclip data (agents, issues, skills, heartbeat_runs)
 - **Ollama** — local LLM (embeddings, optional inference)
+- **Forgejo** — self-hosted Git server for skill-sync repos
 - **Traefik** — TLS termination, reverse proxy, MCP HTTPS endpoints
 - **Docker Compose** — orchestration
 - **Kubernetes** (optional) — remote agent deployment via `hermes_remote` adapter

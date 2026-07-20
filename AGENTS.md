@@ -17,156 +17,109 @@ HW RND AI Crew is a Docker Compose stack providing RAG over Nextcloud files, Pap
 ### Service Topology
 
 ```
-                                 ┌──────────────────────┐
-                                 │       INTERNET        │
-                                 │  Users / Telegram /   │
-                                 │  LLM Providers (API)  │
-                                 └──────────┬───────────┘
-                                            │
-                              ┌─────────────┴──────────────┐
-                              │        Traefik             │
-                              │    (TLS termination,       │
-                              │     reverse proxy)         │
-                              │    network: traefik-public │
-                              └──┬──────────┬──────────┬───┘
-                    paperclip.*  │          │          │  rag.*
-                                 │          │          │
-                                 │          │          │
-          ┌──────────────────────┘          │          └───────────────────────┐
-          ▼                                 ▼                                  ▼
-┌─────────────────────┐          ┌──────────────────┐              ┌───────────────────┐
-│  paperclip-server   │          │     rag-mcp      │              │   paperclip-mcp   │
-│     (:3100)         │          │     (:8081)      │              │     (:8082)       │
-│                     │          │                  │              │                   │
-│ ┌─────────────────┐ │          │ MCP tools:       │              │ MCP tools:        │
-│ │ REST API        │ │          │ • search_nextcloud│              │ • paperclip_list_* │
-│ │ (auth, CRUD,    │ │          │ • search_outline │              │ • paperclip_set_*  │
-│ │  heartbeat,     │ │          │ • list_outline_* │              │ • paperclip_update*│
-│ │  budgets,       │ │          │                  │              │   (23 tools)      │
-│ │  skills)        │ │          └────────┬─────────┘              └────────┬──────────┘
-│ └─────────────────┘ │                   │                                 │
-│ ┌─────────────────┐ │                   │   search_outline                │
-│ │ UI (Vite SPA)   │ │                   │   list_outline_documents        │
-│ │ (React)         │ │                   ▼                                 │
-│ └─────────────────┘ │          ┌──────────────────┐                       │
-│ ┌─────────────────┐ │          │      Qdrant      │                       │
-│ │ Heartbeat Svc   │ │          │   (:6333/6334)   │                       │
-│ │ (cron → runs)   │ │          │                  │                       │
-│ └────────┬────────┘ │          │ Collections:     │                       │
-│          │          │          │ • outline_docs   │                       │
-└──────────┼──────────┘          │ • agent_memory   │                       │
-           │                     │ • nextcloud_*    │                       │
-           │                     └──────────────────┘                       │
-           │                                                                │
-           │  POST /v1/runs (SSE)     ┌────────────────────────┐           │
-           │  (heartbeat_run_id +     │    hermes-gateway      │           │
-           │   pcp_* API key)         │   (Supervisor PID 1)   │           │
-           │                     ┌───►│                        │           │
-           │                     │    │ ┌────────────────────┐  │           │
-           │                     │    │ │ orchestrator.py    │  │           │
-           │                     │    │ │ (reconcile 60s)    │  │           │
-           └─────────────────────┼───►│ │  • provisioning   │  │           │
-                                 │    │ │  • skill_scanner   │  │           │
-           ┌─────────────────────┼───►│ │  • skill_git_sync  │  │           │
-           │                     │    │ │  • _patch_installed│  │           │
-           │                     │    │ └────────────────────┘  │           │
-           │  ports.json         │    │                         │           │
-           │  (shared volume)    │    │ ┌────────────────────┐  │           │
-           │                     │    │ │ gateway × N         │  │           │
-           │                     │    │ │ (one per agent)     │  │           │
-           │                     │    │ │ api_server.py       │  │           │
-           │                     │    │ │ :8642 .. :8673     │  │           │
-           │                     │    │ └────────────────────┘  │           │
-           │                     │    │                         │           │
-           │                     │    │ ┌────────────────────┐  │           │
-           │                     │    │ │ session_indexer.py  │  │           │
-           │                     │    │ │ (10 min cron,       │  │           │
-           │                     │    │ │  embed → Qdrant)    │  │           │
-           │                     │    │ └────────────────────┘  │           │
-           │                     │    │                         │           │
-           │                     │    │ ┌────────────────────┐  │           │
-           │                     │    │ │ memory_mcp_server   │  │           │
-           │                     │    │ │ (:8680, MCP)        │  │           │
-           │                     │    │ │ search_memory       │  │           │
-           │                     │    │ │ get_agent_context   │  │           │
-           │                     │    │ └────────────────────┘  │           │
-           │                     │    │                         │           │
-           │                     │    │ ┌────────────────────┐  │           │
-           │                     │    │ │ rag-worker          │  │           │
-           │                     │    │ │ (Outline + NC sync  │  │           │
-           │                     │    │ │  → Qdrant index)    │  │           │
-           │                     │    │ └────────────────────┘  │           │
-           │                     │    └────────────────────────┘           │
-           │                     │                                         │
-           │  ┌──────────────────┘                                         │
-           ▼  ▼                                                            │
-┌──────────────────┐    ┌──────────────┐    ┌──────────────────┐          │
-│  paperclip-db    │    │    Ollama     │    │  docker-guard    │          │
-│  PostgreSQL 17   │    │   (:11434)   │    │    (:2375)       │          │
-│  (:5432)         │    │              │    │                  │          │
-│                  │    │ Models:      │    │ Docker API proxy │          │
-│ Tables:          │    │ • nomic-embed│    │ (GET filtered)   │          │
-│ • issues         │    │   -text 768d │    │ (write blocked)  │          │
-│ • agents         │    │ • llama3     │    └────────┬─────────┘          │
-│ • company_       │    │ • qwen etc.  │             │                    │
-│   memberships    │    └──────────────┘   /var/run/docker.sock:ro        │
-│ • company_skills │                                             │         │
-│ • heartbeat_runs │    ┌──────────────┐                    Docker daemon │
-│ • activity_log   │    │   rag-worker │                                  │
-│ • budgets        │    │  (indexer)   │                                  │
-│ • budget_        │    │              │                                  │
-│   incidents      │    │ Outline API ─┼── sync every 300s ──► Qdrant   │
-│ • instance_      │    │ Nextcloud ───┼── sync every 600s ──► Qdrant   │
-│   settings       │    └──────────────┘                                  │
-└──────────────────┘                                                       │
-                                                                           │
-┌─── outline_internal network ─────────────────────────────────────────┐   │
-│                                                                       │   │
-│  ┌──────────────────────────────────┐                                 │   │
-│  │       Outline (knowledge base)   │◄── hermes-gateway MCP          │   │
-│  │       outline.collaborationism   │    (Bearer ol_api_...)         │   │
-│  │       .tech                      │    create/update/search docs   │   │
-│  └──────────────────────────────────┘                                 │   │
-│                                                                       │   │
-└───────────────────────────────────────────────────────────────────────┘   │
-                                                                            │
-┌─── nextcloud-rag network ─────────────────────────────────────────────┐   │
-│                                                                       │   │
-│  ┌──────────────────────────────────┐                                 │   │
-│  │       Nextcloud (file storage)   │◄── rag-worker (WebDAV)          │   │
-│  │                                  │◄── nextcloud-mcp               │   │
-│  └──────────────────────────────────┘                                 │   │
-│                                                                       │   │
-│  ┌──────────────────────────────────┐                                 │   │
-│  │       nextcloud-mcp              │◄── hermes-gateway agents        │   │
-│  │       (file read/write MCP)      │                                 │   │
-│  └──────────────────────────────────┘                                 │   │
-│                                                                       │   │
-└───────────────────────────────────────────────────────────────────────┘   │
-                                                                            │
-┌─── External integrations ─────────────────────────────────────────────┐   │
-│                                                                       │   │
-│  ┌────────────┐  ┌────────────┐  ┌────────────────────────────────┐  │   │
-│  │  Telegram  │  │  GitHub    │  │  LLM Providers (credential    │  │   │
-│  │  (per-agent│  │  (skill    │  │  pool, rotates on quota)      │  │   │
-│  │   bots)    │  │   git sync)│  │  GLM, ZAI, Gemini, OpenRouter │  │   │
-│  └────────────┘  └────────────┘  └────────────────────────────────┘  │   │
-│                                                                       │   │
-└───────────────────────────────────────────────────────────────────────┘   │
-                                                                            │
-┌─── Shared Docker Volumes ─────────────────────────────────────────────┐   │
-│                                                                       │   │
-│  paperclip_pgdata  ← paperclip-db persistence                        │   │
-│  paperclip_data    ← agent instructions, prompt-template.md (shared) │   │
-│  hermes_profiles   ← agent sessions, memories, skills (hermes-gateway)│   │
-│  hermes_venv       ← pip-installed hermes-agent (shared build)       │   │
-│  hermes_src        ← hermes-agent-build dir (shared copy)            │   │
-│  hermes_instances  ← hermes instance data                            │   │
-│  gateway_ports     ← ports.json (agent_id → port, shared rw)        │   │
-│  qdrant_data       ← vector embeddings persistence                   │   │
-│  ollama_data       ← downloaded LLM models                           │   │
-│                                                                       │   │
-└───────────────────────────────────────────────────────────────────────┘   │
+                              ┌──────────────────────┐
+                              │       INTERNET        │
+                              │  Users / Telegram /   │
+                              │  LLM Providers (API)  │
+                              │  Git clients (git.*)  │
+                              └──────────┬───────────┘
+                                         │
+                           ┌─────────────┴──────────────┐
+                           │         Traefik            │
+                           │  (TLS termination,         │
+                           │   reverse proxy)           │
+                           │   network: traefik-public  │
+                           └──┬────────┬────────┬───────┘
+                              │        │        │
+                paperclip.*   │        │ rag-mcp.* / mcp.*    git.*
+                              │        │        │
+                ┌─────────────┘        │        └─────────────┐
+                ▼                      ▼                      ▼
+     ┌─────────────────────┐ ┌──────────────────┐ ┌─────────────────────┐
+     │  paperclip-server   │ │     rag-mcp      │ │      forgejo        │
+     │      (:3100)        │ │     (:8081)      │ │   git.* (:3000)     │
+     │                     │ │                  │ │  skill-sync repos   │
+     │  REST API · UI      │ │ search_nextcloud │ │  (branch-protected) │
+     │  Heartbeat Svc      │ │ search_outline   │ └──────────┬──────────┘
+     │  (cron → runs)      │ │ list_outline_docs│            │ pull/push
+     │  Budgets · Skills   │ └────────┬─────────┘            ▼
+     └──────────┬──────────┘          │           ┌─────────────────────┐
+                │                     ▼           │     forgejo-ci      │
+                │           ┌──────────────────┐  │  webhook CI runner  │
+                │           │      Qdrant      │  │  (skill-sync status)│
+                │           │   (:6333/6334)   │  └─────────────────────┘
+                │           │  • outline_docs   │
+                │           │  • agent_memory   │
+                │           │  • nextcloud_*    │
+                │           └──────────────────┘
+                │ POST /v1/runs (SSE)
+                │ pcp_* key + run_id
+                ▼
+     ┌──────────────────────────────────────────────────────────────┐
+     │             hermes-gateway (Supervisor PID 1)                │
+     │  ┌────────────────────────────────────────────────────────┐  │
+     │  │ orchestrator.py    60s reconcile (DB → config → super)  │  │
+     │  │ gateway × N        :8642-8673 (api_server.py per agent) │  │
+     │  │ session_indexer    10 min cron → Qdrant agent_memory    │  │
+     │  │ memory_mcp_server  :8680 (MCP: search_memory, get_ctx)  │  │
+     │  │ team_skills_api    :8681 (paperclip team-skills proxy)  │  │
+     │  │ skill_sync_mcp     :8683 (MCP: skill_push ↔ Forgejo)    │  │
+     │  └────────────────────────────────────────────────────────┘  │
+     │  Mounts: hermes_profiles(rw) · paperclip_data(ro)            │
+     │          hermes_venv · hermes_src · gateway_ports(rw)        │
+     │          ./hermes-gateway/skills(ro) · agent_api_keys.json   │
+     └──┬─────────────┬─────────────┬─────────────┬─────────────┬───┘
+        │             │             │             │             │
+        ▼             ▼             ▼             ▼             ▼
+   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+   │ paperclip│  │  Ollama  │  │ docker-  │  │  rag-    │  │nextcloud │
+   │   -db    │  │ (:11434) │  │  guard   │  │ worker   │  │   -mcp   │
+   │PostgreSQL│  │nomic-emb │  │ (:2375)  │  │ (:8080)  │  │(internal)│
+   │  17      │  │ -text    │  │+agent-   │  │Outline   │  │→Nextcloud│
+   │ (:5432)  │  │llama3    │  │ deploy/  │  │Nextcloud │  │  WebDAV  │
+   └────┬─────┘  └──────────┘  └────┬─────┘  └──────────┘  └────┬─────┘
+        │                           │                           │
+        │ reads/writes              │ filtered API              │ file ops
+        │ (agents, issues,          │ (GET allowed,             │ (read/write/
+        │  skills, heartbeat_runs,  │  writes blocked)          │  list/upload/
+        │  budgets, activity_log)   │                           │  download)
+        ▼                           ▼                           ▼
+   PostgreSQL 17               /var/run/docker.sock        Nextcloud WebDAV
+```
+
+### Supporting infrastructure
+
+```
+ ┌─── outline_internal network ────────────────────┐
+ │  Outline (outline.collaborationism.tech)         │
+ │  ◄── hermes-gateway MCP (Bearer ol_api_...)      │
+ │      create / update / search docs               │
+ └──────────────────────────────────────────────────┘
+
+ ┌─── nextcloud-rag network ────────────────────────┐
+ │  Nextcloud (file storage)                        │
+ │  ◄── rag-worker (WebDAV, indexing every 600s)    │
+ │  ◄── nextcloud-mcp (agent file read/write)       │
+ └──────────────────────────────────────────────────┘
+
+ ┌─── External integrations ────────────────────────┐
+ │  Telegram (per-agent bots)                       │
+ │  LLM Providers (credential pool, rotates):       │
+ │    GLM, ZAI, Gemini, OpenRouter                  │
+ └──────────────────────────────────────────────────┘
+
+ ┌─── Shared Docker Volumes ────────────────────────┐
+ │  paperclip_pgdata   ← paperclip-db persistence   │
+ │  paperclip_data     ← agent instructions, prompts│
+ │  hermes_profiles    ← agent sessions, skills     │
+ │  hermes_venv        ← pip-installed hermes-agent │
+ │  hermes_src         ← hermes-agent-build copy    │
+ │  hermes_instances   ← hermes instance data       │
+ │  gateway_ports      ← ports.json (shared rw)     │
+ │  qdrant_data        ← vector embeddings          │
+ │  ollama_data        ← LLM models                 │
+ │  forgejo_data       ← Forgejo git repos + LFS    │
+ └──────────────────────────────────────────────────┘
 ```
 
 ### Heartbeat Run Flow
@@ -211,23 +164,26 @@ HW RND AI Crew is a Docker Compose stack providing RAG over Nextcloud files, Pap
  │  │   → text-only retry (×2) │                                      │
  │  └──────────┬───────────────┘                                      │
  │             │                                                      │
- │             │ 4. MCP TOOL CALLS (during agent loop)                 │
- │             │                                                      │
- │             ├──────────────► paperclip-mcp ──► paperclip-server API │
- │             │                  (pcp_* key + run_id)                 │
- │             │                                                      │
- │             ├──────────────► rag-mcp ──► Qdrant (semantic search)  │
- │             │                                                      │
- │             ├──────────────► Outline MCP ──► Outline API            │
- │             │                  (Bearer token)                       │
- │             │                                                      │
- │             ├──────────────► memory MCP (:8680) ──► Qdrant         │
- │             │                  (search_memory)                      │
- │             │                                                      │
- │             ├──────────────► nextcloud-mcp ──► Nextcloud WebDAV    │
- │             │                                                      │
- │             └──────────────► docker-guard ──► Docker daemon        │
- │                                (filtered GET, blocked write)        │
+  │             │ 4. MCP TOOL CALLS (during agent loop)                 │
+  │             │                                                      │
+  │             ├──────────────► paperclip-mcp (:8082) ──► paperclip-server API │
+  │             │                  (pcp_* key + run_id)                 │
+  │             │                                                      │
+  │             ├──────────────► rag-mcp (:8081) ──► Qdrant (semantic search)  │
+  │             │                                                      │
+  │             ├──────────────► Outline MCP (external) ──► Outline API │
+  │             │                  (Bearer token)                       │
+  │             │                                                      │
+  │             ├──────────────► memory MCP (:8680) ──► Qdrant         │
+  │             │                  (search_memory)                      │
+  │             │                                                      │
+  │             ├──────────────► nextcloud-mcp ──► Nextcloud WebDAV    │
+  │             │                                                      │
+  │             ├──────────────► skill_sync MCP (:8683) ──► Forgejo    │
+  │             │                  (skill_push / skill_pull)            │
+  │             │                                                      │
+  │             └──────────────► docker-guard (:2375) ──► Docker daemon │
+  │                                (filtered GET, blocked write)        │
  │                                                                    │
  │         5. RESULT                                                   │
  │         ◄────────────────────────────────────────────────────────── │
@@ -315,19 +271,24 @@ HW RND AI Crew is a Docker Compose stack providing RAG over Nextcloud files, Pap
  │  │  │ • create_*   │  │              │  │   create_document   │  │   │
  │  │  └──────┬───────┘  └──────┬───────┘  └──────────┬─────────┘  │   │
  │  │         │                 │                      │            │   │
- │  │  ┌──────┴───────┐  ┌─────┴────────┐  ┌─────────┴──────────┐ │   │
- │  │  │ memory       │  │ nextcloud    │  │ docker-guard       │ │   │
- │  │  │ (:8680)      │  │              │  │ (Docker API proxy) │ │   │
- │  │  │              │  │ 2 tools:     │  │                    │ │   │
- │  │  │ 2 tools:     │  │ • read_file  │  │ Passthrough:       │ │   │
- │  │  │ • search_    │  │ • write_file │  │ • GET (filtered)   │ │   │
- │  │  │   memory     │  │ • list_files │  │ Blocked:           │ │   │
- │  │  │ • get_agent_ │  │ • download   │  │ • POST/PUT/DELETE  │ │   │
- │  │  │   context    │  │ • upload     │  │   (except allowed) │ │   │
- │  │  └──────────────┘  └──────────────┘  └────────────────────┘ │   │
- │  │                                                                │   │
- │  └──────────────────────────────────────────────────────────────┘   │
- └─────────────────────────────────────────────────────────────────────┘
+  │  │  ┌──────┴───────┐  ┌─────┴────────┐  ┌─────────┴──────────┐ │   │
+  │  │  │ memory       │  │ nextcloud    │  │ docker-guard       │ │   │
+  │  │  │ (:8680)      │  │              │  │ (Docker API proxy) │ │   │
+  │  │  │              │  │ 2 tools:     │  │                    │ │   │
+  │  │  │ 2 tools:     │  │ • read_file  │  │ Passthrough:       │ │   │
+  │  │  │ • search_    │  │ • write_file │  │ • GET (filtered)   │ │   │
+  │  │  │   memory     │  │ • list_files │  │ Blocked:           │ │   │
+  │  │  │ • get_agent_ │  │ • download   │  │ • POST/PUT/DELETE  │ │   │
+  │  │  │   context    │  │ • upload     │  │   (except allowed) │ │   │
+  │  │  └──────────────┘  └──────────────┘  └────────────────────┘ │   │
+  │  │                                                                │   │
+  │  │  ┌────────────────────────────────────────────────────────────┐│   │
+  │  │  │ skill_sync (:8683)  • skill_push / skill_pull / skill_list_remote│   │
+  │  │  │                     → Forgejo (per-agent branches + PRs)   ││   │
+  │  │  └────────────────────────────────────────────────────────────┘│   │
+  │  │                                                                │   │
+  │  └──────────────────────────────────────────────────────────────┘   │
+  └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Data Flows
@@ -379,7 +340,7 @@ HW RND AI Crew is a Docker Compose stack providing RAG over Nextcloud files, Pap
  │  ┌──────────────┐  ┌──────────────────┐  ┌───────────────────┐    │
  │  │ Agent creates │  │ skill_scanner.py │  │ skill_git_sync.py │    │
  │  │ skill via     │  │ (discovers new   │  │ (bidirectional    │    │
- │  │ skill_manage  │  │  SKILL.md in     │  │  GitHub ↔ DB)     │    │
+ │  │ skill_manage  │  │  SKILL.md in     │  │  Forgejo ↔ DB)   │    │
  │  │ tool          │  │  profiles/)      │  │                   │    │
  │  └──────┬───────┘  └──────┬───────────┘  └──────┬────────────┘    │
  │         │                 │                      │                  │
@@ -426,7 +387,7 @@ HW RND AI Crew is a Docker Compose stack providing RAG over Nextcloud files, Pap
  │  │  │  6. _sync_agent_skills() → symlinks + file writes      │ │   │
  │  │  │  7. skill_importer → company_skills upsert             │ │   │
  │  │  │  8. skill_scanner → agent-created skills upsert        │ │   │
- │  │  │  9. skill_git_sync → GitHub push/pull                  │ │   │
+ │  │  │  9. skill_git_sync → Forgejo push/pull                  │ │   │
  │  │  │  10. Hot-reload: hash fingerprint of config template   │ │   │
  │  │  │      + orchestrator + config_generator                  │ │   │
  │  │  └────────────────────────────────────────────────────────┘ │   │
@@ -449,27 +410,42 @@ HW RND AI Crew is a Docker Compose stack providing RAG over Nextcloud files, Pap
  │  │  │ └ memories/ │  │ └ memories/ │  │              │      │   │
  │  │  └──────────────┘  └──────────────┘  └──────────────┘      │   │
  │  │                                                             │   │
- │  │  ┌────────────────────┐    ┌───────────────────────────┐   │   │
- │  │  │ session_indexer.py │    │ memory_mcp_server.py      │   │   │
- │  │  │ (supervisor proc)  │    │ (supervisor proc, :8680)  │   │   │
- │  │  │                    │    │                           │   │   │
- │  │  │ Every 10 min:      │    │ MCP StreamableHTTP:       │   │   │
- │  │  │ scan profiles/*/   │    │ • search_memory(query)    │   │   │
- │  │  │  sessions/*.jsonl  │    │ • get_agent_context(name) │   │   │
- │  │  │ + memories/*.md    │    │                           │   │   │
- │  │  │ → embed → Qdrant   │    │ Queries Qdrant           │   │   │
- │  │  └────────────────────┘    │ agent_memory collection   │   │   │
- │  │                            └───────────────────────────┘   │   │
- │  │                                                             │   │
- │  │  Mounted volumes:                                           │   │
- │  │  • paperclip_data:/paperclip:ro (instructions)             │   │
- │  │  • hermes_profiles:/root/.hermes/profiles (rw)             │   │
- │  │  • hermes_src:/opt/hermes-agent-build                      │   │
- │  │  • ./hermes-agent:/opt/hermes-agent:ro (submodule)         │   │
- │  │  • ./hermes-gateway/skills:/opt/skills:ro                  │   │
- │  │  • gateway_ports:/run/gateway-ports (ports.json rw)        │   │
- │  │  • agent_api_keys.json:ro (pcp_* permanent keys)           │   │
- │  │                                                            │   │
+  │  │  ┌────────────────────┐    ┌───────────────────────────┐   │   │
+  │  │  │ session_indexer.py │    │ memory_mcp_server.py      │   │   │
+  │  │  │ (supervisor proc)  │    │ (supervisor proc, :8680)  │   │   │
+  │  │  │                    │    │                           │   │   │
+  │  │  │ Every 10 min:      │    │ MCP StreamableHTTP:       │   │   │
+  │  │  │ scan profiles/*/   │    │ • search_memory(query)    │   │   │
+  │  │  │  sessions/*.jsonl  │    │ • get_agent_context(name) │   │   │
+  │  │  │ + memories/*.md    │    │                           │   │   │
+  │  │  │ → embed → Qdrant   │    │ Queries Qdrant           │   │   │
+  │  │  └────────────────────┘    │ agent_memory collection   │   │   │
+  │  │                            └───────────────────────────┘   │   │
+  │  │                                                             │   │
+  │  │  ┌──────────────────────────┐  ┌──────────────────────────┐ │   │
+  │  │  │ team_skills_api.py       │  │ skill_sync_mcp.py        │ │   │
+  │  │  │ (supervisor proc, :8681) │  │ (supervisor proc, :8683) │ │   │
+  │  │  │                          │  │                          │ │   │
+  │  │  │ Target of paperclip-     │  │ MCP StreamableHTTP:      │ │   │
+  │  │  │ server team-skills       │  │ • skill_push             │ │   │
+  │  │  │ proxy (HERMES_GATEWAY_   │  │ • skill_pull             │ │   │
+  │  │  │ TEAM_SKILLS_URL). Reads  │  │ • skill_list_remote      │ │   │
+  │  │  │ ~/.hermes/profiles/*/    │  │                          │ │   │
+  │  │  │ skills/ for team listing │  │ → Forgejo (per-agent     │ │   │
+  │  │  │                          │  │   branches + PR workflow) │ │   │
+  │  │  └──────────────────────────┘  └──────────────────────────┘ │   │
+  │  │                                                             │   │
+  │  │  Mounted volumes:                                           │   │
+  │  │  • paperclip_data:/paperclip:ro (instructions)             │   │
+  │  │  • hermes_profiles:/root/.hermes/profiles (rw)             │   │
+  │  │  • hermes_src:/opt/hermes-agent-build                      │   │
+  │  │  • hermes_venv:/opt/hermes-venv (shared pip build)         │   │
+  │  │  • ./hermes-agent:/opt/hermes-agent:ro (submodule)         │   │
+  │  │  • ./hermes-shared-config:/opt/hermes-shared-config:ro     │   │
+  │  │  • ./hermes-gateway/skills:/opt/skills:ro                  │   │
+  │  │  • gateway_ports:/run/gateway-ports (ports.json rw)        │   │
+  │  │  • agent_api_keys.json:ro (pcp_* permanent keys)           │   │
+  │  │                                                            │   │
  │  └─────────────────────────────────────────────────────────────┘   │
  └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -663,10 +639,10 @@ Hermes-agent имеет систему навыков (SKILL.md) с progressive 
   - **Pull**: SKILL.md из repo → `company_skills` (sourceKind: `git_sync`). Скрывает (hidden=true) навыки, удалённые из repo.
   - **Per-agent branches**: каждый источник пушит в `skills-sync/<md5(source_id)[:12]>`, НЕ напрямую в main
   - **Incremental commits**: `_prepare_sync_branch()` переиспользует существующую ветку (checkout + merge origin/main), НЕ делает `reset --hard`. Обычный `push` вместо `--force`
-  - **PR workflow**: автоматически создаёт/обновляет PR через GitHub API с structured body (Added/Updated/Removed секции, Ollama summary)
+  - **PR workflow**: автоматически создаёт/обновляет PR через Forgejo API (`/api/v1/`, GitHub-совместимый формат) с structured body (Added/Updated/Removed секции, Ollama summary)
   - **Manifest-based deletion**: каждый источник хранит свои slugs в `.manifests/<source_tag>.json`, удаляет только свои stale навыки
   - **Script sync**: при `source_kind == "agent"` копирует все файлы (кроме SKILL.md) из профиля агента в repo — `.py` скрипты, `.yaml` references, `.json` data
-  - Auth: HTTPS + PAT (embedded в URL: `https://{token}@github.com/...`)
+  - Auth: HTTPS + PAT (embedded в URL: `https://{token}@git.<domain>/...`)
   - Git author через `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` env vars
   - Кеширует repo в `/tmp/skill-git-sync-<source_tag>`, при повторных запусках делает `git pull --rebase`
 - **skill_sources table**: DB таблица с конфигурацией источников синхронизации (id, company_id, repo_url, ref, sync_path, sync_token, sync_author, source_kind, source_locator)
